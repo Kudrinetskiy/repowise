@@ -200,6 +200,38 @@ def test_vscode_setup_refresh_rewrites_idempotently(tmp_path: Path) -> None:
     assert (tmp_path / ".vscode" / "extensions.json").read_text(encoding="utf-8") == ext_first
 
 
+def test_vscode_setup_refresh_does_not_create_missing_files(tmp_path: Path) -> None:
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert not (tmp_path / ".vscode").exists()
+
+
+def test_vscode_setup_refresh_updates_only_existing_mcp_file(tmp_path: Path) -> None:
+    config_path = tmp_path / ".vscode" / "mcp.json"
+    config_path.parent.mkdir()
+    config_path.write_text('{"servers": {}}\n', encoding="utf-8")
+
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "repowise" in saved["servers"]
+    assert not (tmp_path / ".vscode" / "extensions.json").exists()
+
+
+def test_vscode_setup_refresh_updates_only_existing_extensions_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".vscode" / "extensions.json"
+    config_path.parent.mkdir()
+    config_path.write_text('{"recommendations": []}\n', encoding="utf-8")
+
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "repowise-dev.repowise" in saved["recommendations"]
+    assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
 def test_vscode_setup_refresh_skips_when_disabled(tmp_path: Path) -> None:
     VSCodeSetup().refresh_project_files(
         _silent_console(),
