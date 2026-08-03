@@ -973,36 +973,52 @@ def run_update(
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
         if dry_run:
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
+            if not file_diffs and not renderer_changed:
+                if emitter is not None:
+                    emitter.done(
+                        ok=True,
+                        pages_generated=0,
+                        cost_usd=0.0,
+                        duration_s=time.monotonic() - start,
+                        outcome=UpdateOutcome.DRY_RUN.value,
+                    )
+                return UpdateOutcome.DRY_RUN
+        else:
+            cfg = load_config(repo_path)
+            exclude_patterns = list(cfg.get("exclude_patterns") or [])
             if emitter is not None:
-                emitter.done(
-                    ok=True,
-                    pages_generated=0,
-                    cost_usd=0.0,
-                    duration_s=time.monotonic() - start,
-                    outcome=UpdateOutcome.DRY_RUN.value,
+                emitter.stage("rescore_health")
+            try:
+                _run_full_health_rescore(repo_path, exclude_patterns, state)
+            except Exception as exc:
+                if emitter is not None:
+                    emitter.error(str(exc))
+                raise
+
+            # Keep the successful fingerprint in memory, but do not advance a
+            # sync/docs pointer while source or renderer work is still pending.
+            # The normal persistence path below owns that commit boundary.
+            state["config_fingerprint"] = curr_config_fp
+            if not file_diffs and not renderer_changed:
+                save_state(
+                    repo_path,
+                    {
+                        **state,
+                        "last_sync_commit": head,
+                        "config_fingerprint": curr_config_fp,
+                    },
                 )
-            return UpdateOutcome.DRY_RUN
-        cfg = load_config(repo_path)
-        exclude_patterns = list(cfg.get("exclude_patterns") or [])
-        if emitter is not None:
-            emitter.stage("rescore_health")
-        try:
-            _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
-        except Exception as exc:
-            if emitter is not None:
-                emitter.error(str(exc))
-            raise
-        _refresh_editor_stamp(repo_path, agents_md)
-        consume_update_pending(repo_path, head)
-        if emitter is not None:
-            emitter.done(
-                ok=True,
-                pages_generated=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                outcome=UpdateOutcome.REGENERATED.value,
-            )
-        return UpdateOutcome.REGENERATED
+                _refresh_editor_stamp(repo_path, agents_md)
+                consume_update_pending(repo_path, head)
+                if emitter is not None:
+                    emitter.done(
+                        ok=True,
+                        pages_generated=0,
+                        cost_usd=0.0,
+                        duration_s=time.monotonic() - start,
+                        outcome=UpdateOutcome.REGENERATED.value,
+                    )
+                return UpdateOutcome.REGENERATED
 
     render_changed_files(file_diffs, verbose=verbose)
 

@@ -933,16 +933,14 @@ def _run_full_health_rescore(
     repo_path: Any,
     exclude_patterns: list[str],
     state: dict,
-    head: str | None,
-    curr_fingerprint: str,
 ) -> None:
     """Rebuild graph and re-run full health analysis when config changed.
 
     Rebuilds the graph (config edits can change parsing/excludes), then delegates
-    to :func:`_rescore_health_from_db` for the full-replace re-score. On success
-    advances ``last_sync_commit`` + ``config_fingerprint`` so the config change
-    is not re-detected; on failure leaves the fingerprint so the next update
-    retries.
+    to :func:`_rescore_health_from_db` for the full-replace re-score. State is
+    deliberately left to the caller: a config change may coincide with source
+    changes, and their sync pointers must advance only after the whole update
+    has persisted successfully.
     """
     import time
 
@@ -966,14 +964,9 @@ def _run_full_health_rescore(
     try:
         run_async(_rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns))
     except Exception as exc:
-        # Return without advancing the fingerprint so the next update retries.
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
-        return
+        raise
 
-    save_state(
-        repo_path,
-        {**state, "last_sync_commit": head, "config_fingerprint": curr_fingerprint},
-    )
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
 
