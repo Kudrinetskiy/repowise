@@ -817,12 +817,21 @@ def run_update(
     if not dry_run:
         _repair_module_attribution(repo_path)
 
+    # Structural pages can remain stale even when HEAD and both fingerprints
+    # are current (for example after an interrupted decay-only update). Load
+    # them before the no-op shortcut so a plain update becomes their repair
+    # route. This query is SQL-only and never resolves a model provider.
+    from .deterministic import load_stale_file_page_paths
+
+    stale_file_page_paths = load_stale_file_page_paths(repo_path)
+
     if (
         head
         and head == base_ref
         and not config_changed
         and not renderer_changed
         and not working_tree_diffs
+        and not stale_file_page_paths
     ):
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
@@ -1024,7 +1033,7 @@ def run_update(
         working_tree_diffs,
     )
 
-    if not file_diffs and not config_changed and not renderer_changed:
+    if not file_diffs and not config_changed and not renderer_changed and not stale_file_page_paths:
         console.print("[green]No changed files detected.[/green]")
         # Always advance the sync pointer so the on-disk freshness marker stays
         # current on no-op syncs. In docs mode, no changed files means no docs
@@ -1082,7 +1091,7 @@ def run_update(
     # changed files present we fall through to the normal incremental path and
     # force the full re-score at its existing hook, which reuses the graph that
     # path already builds — same re-score, no second traverse.
-    if config_changed and not file_diffs:
+    if config_changed and not file_diffs and not stale_file_page_paths:
         if dry_run:
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
             if emitter is not None:
@@ -1186,6 +1195,12 @@ def run_update(
         affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_renderer_paths]))
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
 
+    structural_refresh_paths = list(dict.fromkeys([*stale_file_page_paths, *affected.decay_only]))
+    if structural_refresh_paths:
+        console.print(
+            f"Structural file pages to refresh: [cyan]{len(structural_refresh_paths)}[/cyan]"
+        )
+
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:
         console.print(f"Pages to decay: [yellow]{len(affected.decay_only)}[/yellow]")
@@ -1236,7 +1251,9 @@ def run_update(
         (state.get("knowledge_graph") or {}).get("fingerprint"),
     )
 
-    if index_only:
+    stale_only = bool(stale_file_page_paths) and not file_diffs and not renderer_changed
+
+    if index_only or stale_only:
         # A repo whose wiki was rendered from templates keeps it current here.
         # Re-rendering is free, so the changed files' pages are refreshed on
         # every update rather than frozen at the commit `init` ran on. Repos
@@ -1245,7 +1262,7 @@ def run_update(
         det_pages: list = []
         index_only_cost = 0.0
         docs_mode = resolve_docs_mode(state)
-        if docs_mode == "deterministic":
+        if docs_mode == "deterministic" or structural_refresh_paths:
             from .deterministic import (
                 load_prior_page_ids,
                 persist_deterministic_pages,
@@ -1261,6 +1278,16 @@ def run_update(
             # keep separate: a file page can no longer be model-written, so a
             # page that predates the single-renderer change re-renders to its
             # structural form here, which is the shape it now has.
+            if docs_mode == "deterministic":
+                deterministic_paths = list(
+                    dict.fromkeys([*affected.regenerate, *structural_refresh_paths])
+                )
+            else:
+                # On an LLM wiki, only file pages already declared stale (or
+                # newly decay-only) are structural repairs. Model-written pages
+                # remain untouched and no provider is resolved on this branch.
+                deterministic_paths = structural_refresh_paths
+
             det_pages = regenerate_deterministic_pages(
                 repo_path=repo_path,
                 parsed_files=parsed_files,
@@ -1268,7 +1295,7 @@ def run_update(
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
                 git_meta_map=git_meta_map,
-                regenerate_paths=affected.regenerate,
+                regenerate_paths=deterministic_paths,
                 cfg=cfg,
                 concurrency=concurrency,
                 degraded=degraded,
@@ -1276,17 +1303,29 @@ def run_update(
                 prior_page_ids=prior_ids,
             )
 
-            if det_pages:
+            rendered_paths = {
+                page.target_path for page in det_pages if getattr(page, "target_path", None)
+            }
+            unresolved_paths = [path for path in deterministic_paths if path not in rendered_paths]
+            persistence_ok = True
+            try:
                 state["total_pages"] = persist_deterministic_pages(
                     repo_path=repo_path,
                     generated_pages=det_pages,
-                    # decay_only are cascade-reached templates the render did not
-                    # touch: marked stale so the view stays honest about which
-                    # pages predate this commit.
-                    decay_paths=affected.decay_only,
+                    decay_paths=unresolved_paths,
                     degraded=degraded,
                 )
+            except Exception as exc:
+                persistence_ok = False
+                degraded.append(f"Template page persistence: {exc}")
+
+            if (
+                persistence_ok
+                and not unresolved_paths
+                and (docs_mode == "deterministic" or stale_only)
+            ):
                 state["last_docs_commit"] = head
+            if det_pages:
                 console.print(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
                     "wiki pages from structure"
@@ -1743,6 +1782,51 @@ def run_update(
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
 
+    # Decay-only and previously-stale file pages are structural even on an
+    # LLM wiki. Refresh any that the normal affected-page generation did not
+    # already produce, without spending another model call.
+    generated_file_paths = {
+        page.target_path
+        for page in generated_pages
+        if getattr(page, "page_type", None) == "file_page" and getattr(page, "target_path", None)
+    }
+    extra_structural_paths = [
+        path for path in structural_refresh_paths if path not in generated_file_paths
+    ]
+    if extra_structural_paths:
+        from .deterministic import (
+            load_prior_page_ids,
+            regenerate_deterministic_pages,
+        )
+
+        structural_pages = regenerate_deterministic_pages(
+            repo_path=repo_path,
+            parsed_files=parsed_files,
+            source_map=source_map,
+            graph_builder=graph_builder,
+            repo_structure=repo_structure,
+            git_meta_map=git_meta_map,
+            regenerate_paths=extra_structural_paths,
+            cfg=cfg,
+            concurrency=concurrency,
+            degraded=degraded,
+            dead_code_report=dead_code_report,
+            prior_page_ids=load_prior_page_ids(repo_path),
+        )
+        generated_pages.extend(structural_pages)
+        generated_file_paths.update(
+            page.target_path for page in structural_pages if getattr(page, "target_path", None)
+        )
+        if structural_pages:
+            console.print(
+                f"  [green]✓[/green] Re-rendered [bold]{len(structural_pages)}[/bold] "
+                "stale wiki pages from structure"
+            )
+
+    unresolved_structural_paths = [
+        path for path in structural_refresh_paths if path not in generated_file_paths
+    ]
+
     # Flush the buffered LLM cost rows now that generation is done — a single
     # transaction outside the contended generation window (issue #326).
     from repowise.cli.providers import flush_cost_tracker
@@ -1793,7 +1877,7 @@ def run_update(
             graph_builder=graph_builder,
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
-            decay_paths=affected.decay_only,
+            decay_paths=unresolved_structural_paths,
             parsed_files=parsed_files,
             git_decay_map=git_decay_map,
         )
@@ -1905,7 +1989,7 @@ def run_update(
         return UpdateOutcome.REGENERATED
     show_full_completion(
         generated_pages=generated_pages,
-        decay_count=len(affected.decay_only),
+        decay_count=len(unresolved_structural_paths),
         decisions_changed=len(new_decision_markers) + len(session_decisions) + decisions_evolved,
         provider=provider,
         cost=cost_tracker.session_cost,
