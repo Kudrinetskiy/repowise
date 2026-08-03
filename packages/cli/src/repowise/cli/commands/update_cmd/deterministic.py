@@ -74,6 +74,36 @@ async def _load_prior_page_ids(repo_path: Path) -> dict:
         await engine.dispose()
 
 
+def load_stale_file_page_paths(repo_path: Path) -> list[str]:
+    """Return persisted stale structural file-page targets, best-effort."""
+    return run_async(_load_stale_file_page_paths(repo_path))
+
+
+async def _load_stale_file_page_paths(repo_path: Path) -> list[str]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.target_path).where(
+                    Page.page_type == "file_page",
+                    Page.freshness_status == "stale",
+                )
+            )
+            return sorted({str(row[0]) for row in rows if row[0]})
+    except Exception:
+        # A stale-page lookup must not make an otherwise healthy update fail.
+        return []
+    finally:
+        await engine.dispose()
+
+
 def regenerate_deterministic_pages(
     *,
     repo_path: Path,
@@ -174,6 +204,10 @@ def _render_pages(
                 vector_store = build_vector_store(repo_path, build_embedder(embedder_name))
             except Exception as exc:  # embedding is optional; FTS still indexes
                 degraded.append(f"Page embedding: {exc}")
+                # A configured real vector index is part of persistence. Do not
+                # publish a page as fresh when its semantic-search row could not
+                # be updated; the next update can retry the whole page safely.
+                return []
 
         generator = PageGenerator(
             TemplateProvider(),
@@ -319,6 +353,28 @@ async def _persist_async(
                 )
         except Exception as exc:
             degraded.append(f"Full-text index: {exc}")
+            # SQL upserts commit before FTS. Restore the freshness marker if
+            # FTS fails so a later update retries instead of treating a
+            # partially persisted structural page as healthy.
+            try:
+                from repowise.core.pipeline.persist import mark_stale_pages
+
+                async with get_session(sf) as session:
+                    repo = await upsert_repository(
+                        session, name=repo_path.name, local_path=str(repo_path)
+                    )
+                    await mark_stale_pages(
+                        session,
+                        repo.id,
+                        [
+                            page.target_path
+                            for page in generated_pages
+                            if getattr(page, "target_path", None)
+                        ],
+                    )
+            except Exception as stale_exc:
+                degraded.append(f"Freshness rollback: {stale_exc}")
+            raise
     finally:
         await engine.dispose()
     return total
