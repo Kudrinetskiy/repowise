@@ -313,6 +313,37 @@ async def test_generate_uses_jsonl_usage_and_ignores_noise(monkeypatch, tmp_path
     assert "estimated" not in result.usage
 
 
+async def test_generate_uses_only_final_agent_message(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+
+    async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
+        return FakeProcess(
+            stdout=_jsonl(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "I am still working on the page.",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "Final generated documentation.",
+                    },
+                },
+                {"type": "turn.completed", "usage": {}},
+            )
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    result = await CodexCliProvider(repo_path=tmp_path).generate("sys", "user")
+
+    assert result.content == "Final generated documentation."
+
+
 async def test_generate_accepts_cache_hints(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
 
