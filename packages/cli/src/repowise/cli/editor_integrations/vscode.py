@@ -58,7 +58,7 @@ class VSCodeSetup:
     ) -> None:
         if self.project_file_id in options.disabled_project_files:
             return
-        _write_vscode_files(console_obj, repo_path)
+        _write_vscode_files(console_obj, repo_path, existing_only=True)
 
 
 def _prompt_vscode_enabled(console_obj: Any) -> bool:
@@ -74,7 +74,12 @@ def _prompt_vscode_enabled(console_obj: Any) -> bool:
     )
 
 
-def _write_vscode_files(console_obj: Any, repo_path: Path) -> None:
+def _write_vscode_files(
+    console_obj: Any,
+    repo_path: Path,
+    *,
+    existing_only: bool = False,
+) -> None:
     """Write or merge the managed .vscode files, skipping any JSONC file safely."""
 
     from repowise.cli.mcp_config import (
@@ -82,21 +87,25 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> None:
         save_vscode_mcp_config,
     )
 
-    try:
-        mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [green]✓[/green] VS Code MCP configured ({mcp_path})")
-    except ValueError:
-        console_obj.print(
-            "  [yellow].vscode/mcp.json left unchanged (not valid JSON; it may contain "
-            'comments). Add a "repowise" server under "servers" manually.[/yellow]'
-        )
+    mcp_config_path = repo_path / ".vscode" / "mcp.json"
+    if not existing_only or mcp_config_path.is_file():
+        try:
+            mcp_path = save_vscode_mcp_config(repo_path)
+            console_obj.print(f"  [green]✓[/green] VS Code MCP configured ({mcp_path})")
+        except ValueError:
+            console_obj.print(
+                "  [yellow].vscode/mcp.json left unchanged (not valid JSON; it may contain "
+                'comments). Add a "repowise" server under "servers" manually.[/yellow]'
+            )
 
-    try:
-        ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [green]✓[/green] VS Code extension recommended ({ext_path})")
-    except ValueError:
-        console_obj.print(
-            "  [yellow].vscode/extensions.json left unchanged (not valid JSON; it may "
-            'contain comments). Add "repowise-dev.repowise" to "recommendations" '
-            "manually.[/yellow]"
-        )
+    extensions_config_path = repo_path / ".vscode" / "extensions.json"
+    if not existing_only or extensions_config_path.is_file():
+        try:
+            ext_path = save_vscode_extensions_config(repo_path)
+            console_obj.print(f"  [green]✓[/green] VS Code extension recommended ({ext_path})")
+        except ValueError:
+            console_obj.print(
+                "  [yellow].vscode/extensions.json left unchanged (not valid JSON; it may "
+                'contain comments). Add "repowise-dev.repowise" to "recommendations" '
+                "manually.[/yellow]"
+            )
