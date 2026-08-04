@@ -156,6 +156,27 @@ def test_importance_floor_excludes_tests_and_reexports():
     assert len(sel.file_page_paths) == 6
 
 
+def test_markdown_docs_get_file_pages_without_entering_concept_modules():
+    """Canonical Markdown is searchable even though docs are not code modules."""
+    path = "docs/_task/event-change-history/01-global-plan.md"
+    parsed = [
+        FakeParsedFile(
+            file_info=FakeFileInfo(
+                path=path,
+                language="markdown",
+                size_bytes=5_000,
+            ),
+            symbols=[],
+        )
+    ]
+
+    sel = select_pages(_inputs(parsed, {path: 0.0}, {path: 0.0}, {path: 0}, GenerationConfig()))
+
+    assert sel.file_page_paths == [path]
+    assert all(path not in group.file_paths for group in sel.module_groups)
+    assert count_documentable_files(parsed) == 1
+
+
 def test_selection_does_not_depend_on_having_a_key():
     """Keyed and keyless runs select exactly the same pages.
 

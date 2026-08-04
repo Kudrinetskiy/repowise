@@ -12,7 +12,7 @@ import structlog
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
-from ..categories import file_category
+from ..categories import CATEGORY_DOC, file_category
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -287,6 +287,11 @@ class ContextAssembler:
         pass it when assembling context for many files against one graph.
         """
         path = parsed.file_info.path
+        category = file_category(
+            path,
+            parsed.file_info.language,
+            is_config=getattr(parsed.file_info, "is_config", False),
+        )
         budget = self._config.token_budget
         used = 0
 
@@ -333,7 +338,13 @@ class ContextAssembler:
         remaining = budget - used
         source_tokens = self._estimate_tokens(source_text)
         threshold = self._config.token_budget * self._config.large_file_source_pct
-        if source_tokens > remaining and source_tokens > threshold:
+        if category == CATEGORY_DOC:
+            # The Markdown body is the canonical material users search for.
+            # File pages are template-rendered, not model prompts, and vector
+            # persistence applies its own embed-size cap; keep the complete
+            # body here so SQL/FTS retrieval never drops late sections.
+            snippet = source_text
+        elif source_tokens > remaining and source_tokens > threshold:
             snippet = self._build_structural_summary(parsed, source_text, remaining)
         else:
             snippet = self._trim_to_budget(source_text, remaining)
@@ -370,11 +381,7 @@ class ContextAssembler:
             is_api_contract=parsed.file_info.is_api_contract,
             is_entry_point=parsed.file_info.is_entry_point,
             is_test=parsed.file_info.is_test,
-            file_category=file_category(
-                path,
-                parsed.file_info.language,
-                is_config=getattr(parsed.file_info, "is_config", False),
-            ),
+            file_category=category,
             parse_errors=parsed.parse_errors,
             estimated_tokens=used,
             git_metadata=git_meta,

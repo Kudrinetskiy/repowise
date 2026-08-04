@@ -40,6 +40,7 @@ log = structlog.get_logger(__name__)
 _INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
 _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
+_DOCUMENT_FILE_LANGUAGES = frozenset({"markdown"})
 
 # Top-level directories whose contents document or illustrate the repository
 # rather than being it. Matched as a whole first path segment only. See
@@ -209,6 +210,20 @@ def _is_code_file(parsed: Any) -> bool:
     return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
 
 
+def _is_document_file(parsed: Any) -> bool:
+    """Return True for prose sources that need exact searchable file pages."""
+    fi = parsed.file_info
+    return (
+        not fi.is_api_contract
+        and not _is_infra_file(parsed)
+        and fi.language in _DOCUMENT_FILE_LANGUAGES
+    )
+
+
+def _is_file_page_candidate(parsed: Any) -> bool:
+    return _is_code_file(parsed) or _is_document_file(parsed)
+
+
 # ---------------------------------------------------------------------------
 # File-page volume policy
 #
@@ -274,7 +289,9 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     to do before generation starts, in the same terms the policy uses.
     """
     return sum(
-        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
+        1
+        for p in parsed_files
+        if _is_file_page_candidate(p) and _passes_importance_floor(p.file_info.path)
     )
 
 
@@ -314,21 +331,28 @@ def _build_file_candidates(
 
     scored: list[tuple[float, str]] = []
     for p in inputs.parsed_files:
-        if not _is_code_file(p):
+        if not _is_file_page_candidate(p):
             continue
         path = p.file_info.path
         if not _passes_importance_floor(path):
             continue
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
-        s = score_file(
-            p,
-            pagerank=inputs.pagerank.get(path, 0.0),
-            betweenness=inputs.betweenness.get(path, 0.0),
-            max_pagerank=max_pr,
-            max_betweenness=max_bet,
-            is_hotspot=is_hotspot,
-            kg_bonus=kg_scores.get(path, 0.0),
-        )
+        if _is_document_file(p):
+            # Markdown usually has no code symbols or dependency-graph signal,
+            # but its source text is itself the content users need to retrieve.
+            # A small size-based score keeps ordering deterministic while the
+            # normal file-page cap still bounds exceptionally large indexes.
+            s = 0.01 + min(max(p.file_info.size_bytes, 0), 100_000) / 100_000
+        else:
+            s = score_file(
+                p,
+                pagerank=inputs.pagerank.get(path, 0.0),
+                betweenness=inputs.betweenness.get(path, 0.0),
+                max_pagerank=max_pr,
+                max_betweenness=max_bet,
+                is_hotspot=is_hotspot,
+                kg_bonus=kg_scores.get(path, 0.0),
+            )
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))

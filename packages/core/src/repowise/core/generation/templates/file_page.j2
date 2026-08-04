@@ -24,6 +24,12 @@
 ## Overview
 
 {% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file{% if ctx.kg_layer_name %} in the {{ ctx.kg_layer_name }} layer{% endif %}{% if ctx.community_label %}, part of the {{ ctx.community_label }} module cluster{% endif %}.{% endif %}
+{%- if ctx.file_category == "doc" and ctx.file_source_snippet %}
+
+## Document contents
+
+{{ ctx.file_source_snippet }}
+{%- endif %}
 {%- if public_syms %}
 
 It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.
