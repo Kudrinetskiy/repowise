@@ -177,6 +177,52 @@ def test_config_only_rescore_advances_only_fingerprint(tmp_path: Path) -> None:
     assert after["config_fingerprint"] != before["config_fingerprint"]
 
 
+def test_added_markdown_doc_becomes_searchable_file_page(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    marker = "S2FIELDPRESENTATIONCANONICAL"
+    doc_path = "docs/_task/event-change-history/01-global-plan.md"
+    doc = repo / doc_path
+    doc.parent.mkdir(parents=True)
+    long_prefix = "## Historical checkpoint\n\nArchived evidence line.\n\n" * 1_500
+    doc.write_text(
+        f"# Event Change History\n\n{long_prefix}\n{marker}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", doc_path)
+    _git(
+        repo,
+        "-c",
+        "user.name=RepoWise Test",
+        "-c",
+        "user.email=repowise-test@example.invalid",
+        "commit",
+        "-qm",
+        "add canonical docs",
+    )
+
+    updated = _run(
+        [REPOWISE, "update", str(repo), "--index-only", "--no-agents"],
+        repo,
+    )
+
+    output = updated.stdout + updated.stderr
+    assert updated.returncode == 0, output
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as database:
+        row = database.execute(
+            "SELECT content FROM wiki_pages "
+            "WHERE page_type = 'file_page' AND target_path = ?",
+            (doc_path,),
+        ).fetchone()
+        fts_count = database.execute(
+            "SELECT COUNT(*) FROM page_fts WHERE page_fts MATCH ?",
+            (marker,),
+        ).fetchone()
+
+    assert row is not None, output
+    assert marker in str(row[0])
+    assert fts_count is not None and int(fts_count[0]) >= 1
+
+
 def test_failure_after_rescore_does_not_advance_state(
     tmp_path: Path,
     monkeypatch,

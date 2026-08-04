@@ -1157,7 +1157,7 @@ def run_update(
         det_pages: list = []
         index_only_cost = 0.0
         docs_mode = resolve_docs_mode(state)
-        if docs_mode == "deterministic" or structural_refresh_paths:
+        if affected.regenerate or structural_refresh_paths:
             from .deterministic import (
                 load_prior_page_ids,
                 persist_deterministic_pages,
@@ -1173,15 +1173,9 @@ def run_update(
             # keep separate: a file page can no longer be model-written, so a
             # page that predates the single-renderer change re-renders to its
             # structural form here, which is the shape it now has.
-            if docs_mode == "deterministic":
-                deterministic_paths = list(
-                    dict.fromkeys([*affected.regenerate, *structural_refresh_paths])
-                )
-            else:
-                # On an LLM wiki, only file pages already declared stale (or
-                # newly decay-only) are structural repairs. Model-written pages
-                # remain untouched and no provider is resolved on this branch.
-                deterministic_paths = structural_refresh_paths
+            deterministic_paths = list(
+                dict.fromkeys([*affected.regenerate, *structural_refresh_paths])
+            )
 
             det_pages = regenerate_deterministic_pages(
                 repo_path=repo_path,
