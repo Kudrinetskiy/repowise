@@ -295,6 +295,16 @@ def _run_repo_checks(
                     indexable_ids = {
                         p.id for p in pages if meets_information_floor(p.content or "")
                     }
+                    # Tombstones describe deleted files and are deliberately
+                    # removed from FTS. Keep them in the vector reconciliation
+                    # (whose existing behavior is independent), but do not
+                    # report their intentional FTS absence as missing drift.
+                    fts_indexable_ids = {
+                        p.id
+                        for p in pages
+                        if p.freshness_status != "tombstone"
+                        and meets_information_floor(p.content or "")
+                    }
                     # A stub standing in for a failed model page is held out of
                     # the vector store on purpose: ``_seed_resume`` reads the
                     # store back as the ledger of pages already written, so a
@@ -330,8 +340,8 @@ def _run_repo_checks(
                     fts_ids = await fts.list_indexed_ids()
                 except Exception:
                     fts_ids = set()
-                m_fts = indexable_ids - fts_ids if fts_ids else set()
-                o_fts = fts_ids - sql_ids if fts_ids else set()
+                m_fts = fts_indexable_ids - fts_ids if fts_ids else set()
+                o_fts = fts_ids - fts_indexable_ids if fts_ids else set()
 
                 await engine.dispose()
                 return m_vec, o_vec, m_fts, o_fts, len(stub_ids)
