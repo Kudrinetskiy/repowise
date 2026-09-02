@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -46,6 +49,43 @@ def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["tools"] == "all"
     assert captured["host"] == "127.0.0.1"
+
+
+def test_mcp_stdio_keeps_structlog_events_out_of_stdout(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    script = textwrap.dedent(
+        f"""
+        import structlog
+
+        from repowise.cli.commands.mcp_cmd import mcp_command
+        import repowise.server.mcp_server as mcp_server
+
+        def fake_run_mcp(**_kwargs):
+            structlog.get_logger("repowise.test.mcp_stdio").debug(
+                "protocol channel check"
+            )
+
+        mcp_server.run_mcp = fake_run_mcp
+        mcp_command.callback(
+            path={str(tmp_path)!r},
+            transport="stdio",
+            port=7338,
+            host=None,
+            tools=None,
+            all_tools=False,
+        )
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 def test_mcp_cli_accepts_streamable_http_transport(

@@ -7,7 +7,12 @@ from pathlib import Path
 
 import click
 
-from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path
+from repowise.cli.helpers import (
+    console,
+    find_repowise_repo_root,
+    resolve_repo_path,
+    silence_logs_for_machine_output,
+)
 from repowise.cli.ui import load_dotenv
 from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
 
@@ -151,6 +156,11 @@ def mcp_command(
         repowise mcp --all               # every available tool
         repowise mcp --transport streamable-http  # HTTP on port 7338
     """
+    if transport == "stdio":
+        # JSON-RPC owns stdout in stdio mode. Install filtering before setup
+        # work can emit structlog events onto the protocol channel.
+        silence_logs_for_machine_output()
+
     if path is None:
         repo_path = find_repowise_repo_root(Path.cwd()) or resolve_repo_path(None)
     else:
