@@ -266,6 +266,8 @@ class _GenerationRun:
 
     async def _compute_selection(self) -> None:
         """Run the selection subsystem and derive the level allow-sets."""
+        from ..selection.selector import _is_document_file
+
         code_files = [
             p
             for p in self.parsed_files
@@ -273,6 +275,7 @@ class _GenerationRun:
             and not _is_infra_file(p)
             and p.file_info.language in _CODE_LANGUAGES
         ]
+        document_files = [p for p in self.parsed_files if _is_document_file(p)]
 
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
@@ -330,10 +333,12 @@ class _GenerationRun:
         # and scope resolution, which call it too, stay free of the model.
         await self._name_concept_groups()
 
-        # Sort code_files for stable level-2 ordering: selected files first
-        # (so dep summaries land in the store earliest), then by PageRank desc.
+        # Sort every file-page source for stable level-2 ordering: selected
+        # files first (so dep summaries land in the store earliest), then by
+        # PageRank desc. Documents do not enter clone or concept-module logic,
+        # but level 2 must still assemble and render their selected file pages.
         self.code_files = sorted(
-            code_files,
+            [*code_files, *document_files],
             key=lambda p: (
                 p.file_info.path not in self.sel_file_paths,
                 not p.file_info.is_entry_point,

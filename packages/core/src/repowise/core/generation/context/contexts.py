@@ -68,6 +68,9 @@ class FilePageContext:
     # which case the template drops the section rather than rendering an empty
     # heading.
     file_vocabulary: str = ""
+    # Exact documentation body for structural Markdown pages. Code pages leave
+    # this empty, preserving the bounded-memory behaviour of issue #1394.
+    file_source_snippet: str = ""
 
 
 @dataclass
