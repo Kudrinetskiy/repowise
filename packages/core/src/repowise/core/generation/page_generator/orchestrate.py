@@ -320,6 +320,19 @@ class _GenerationRun:
 
         self.selection = selection
         self.sel_file_paths = set(selection.file_page_paths)
+        if self.only_page_ids:
+            # An explicitly scoped file page is a stronger request than the
+            # significance heuristic. This matters when an existing page must
+            # be refreshed after its parser output loses every symbol: normal
+            # selection may drop it, but leaving the persisted row stale makes
+            # every later update retry the same impossible repair.
+            from repowise.core.generation.models import compute_page_id
+
+            self.sel_file_paths.update(
+                p.file_info.path
+                for p in parsed_files_for_selection
+                if compute_page_id("file_page", p.file_info.path) in self.only_page_ids
+            )
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)
         self.sel_module_groups = list(selection.module_groups)
