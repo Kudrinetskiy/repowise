@@ -24,7 +24,7 @@ from repowise.core.ingestion.package_roots import (
 )
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
-from ..categories import file_category
+from ..categories import CATEGORY_DOC, file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
 from .contexts import (
@@ -298,6 +298,11 @@ class ContextAssembler:
         pass it when assembling context for many files against one graph.
         """
         path = parsed.file_info.path
+        category = file_category(
+            path,
+            parsed.file_info.language,
+            is_config=getattr(parsed.file_info, "is_config", False),
+        )
         budget = self._config.token_budget
         used = 0
 
@@ -380,11 +385,7 @@ class ContextAssembler:
             is_api_contract=parsed.file_info.is_api_contract,
             is_entry_point=parsed.file_info.is_entry_point,
             is_test=parsed.file_info.is_test,
-            file_category=file_category(
-                path,
-                parsed.file_info.language,
-                is_config=getattr(parsed.file_info, "is_config", False),
-            ),
+            file_category=category,
             parse_errors=parsed.parse_errors,
             estimated_tokens=used,
             git_metadata=git_meta,
@@ -410,6 +411,10 @@ class ContextAssembler:
             # against the prompt budget because it is page content rather than
             # model input.
             file_vocabulary=file_vocabulary(source_text),
+            # Markdown is canonical searchable documentation, not model prompt
+            # material. Keep it only for doc pages; code pages retain the
+            # bounded-memory behaviour introduced for large repositories.
+            file_source_snippet=source_text if category == CATEGORY_DOC else "",
         )
 
     # ------------------------------------------------------------------

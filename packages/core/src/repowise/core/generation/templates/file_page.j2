@@ -24,6 +24,12 @@
 ## {{ labels.overview }}
 
 {% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
+{%- if ctx.file_category == "doc" and ctx.file_source_snippet %}
+
+## Document contents
+
+{{ ctx.file_source_snippet }}
+{%- endif %}
 {%- if public_syms %}
 {%- set symbol_word = labels.public_symbol_plural if public_syms | length != 1 else labels.public_symbol_singular %}
 
