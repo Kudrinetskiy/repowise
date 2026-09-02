@@ -21,9 +21,18 @@ from repowise.cli.commands.doctor_cmd import repo_checks
 
 PAGE_IN_BOTH = "file_page:kept.py"
 PAGE_MISSING = "file_page:dropped.py"
+PAGE_TOMBSTONE = "file_page:deleted.py"
 
 
-async def _build_repo(tmp_path: Path) -> Path:
+async def _build_repo(
+    tmp_path: Path,
+    *,
+    second_page_id: str = PAGE_MISSING,
+    second_page_path: str = "dropped.py",
+    second_freshness: str = "fresh",
+    index_second_in_fts: bool = False,
+    index_second_in_vector: bool = False,
+) -> Path:
     """A repo whose database holds two pages and whose store holds one.
 
     The reconciliation only reports a missing page when the store is
@@ -58,7 +67,10 @@ async def _build_repo(tmp_path: Path) -> Path:
         repo = await upsert_repository(
             session, name="repo", local_path=str(repo_path), url="https://example.test/repo"
         )
-        for page_id, path in ((PAGE_IN_BOTH, "kept.py"), (PAGE_MISSING, "dropped.py")):
+        for page_id, path, freshness in (
+            (PAGE_IN_BOTH, "kept.py", "fresh"),
+            (second_page_id, second_page_path, second_freshness),
+        ):
             await upsert_page(
                 session,
                 page_id=page_id,
@@ -71,16 +83,29 @@ async def _build_repo(tmp_path: Path) -> Path:
                 source_hash="",
                 model_name="mock",
                 provider_name="mock",
+                freshness_status=freshness,
             )
         await session.commit()
 
     fts = FullTextSearch(engine)
     await fts.ensure_index()
     await fts.index(PAGE_IN_BOTH, "File: kept.py", "Body.", summary="", target_path="kept.py")
+    if index_second_in_fts:
+        await fts.index(
+            second_page_id,
+            f"File: {second_page_path}",
+            "Body.",
+            summary="",
+            target_path=second_page_path,
+        )
     await engine.dispose()
 
     store = LanceDBVectorStore(str(repowise_dir / "lancedb"), embedder=MockEmbedder())
     await store.embed_and_upsert(PAGE_IN_BOTH, "Body.", {"title": "File: kept.py"})
+    if index_second_in_vector:
+        await store.embed_and_upsert(
+            second_page_id, "Body.", {"title": f"File: {second_page_path}"}
+        )
     await store.close()
 
     return repo_path
@@ -108,6 +133,37 @@ def test_the_full_text_drift_row_is_reported(tmp_path: Path) -> None:
     ok, detail = rows["SQL ↔ FTS Index"]
     assert ok is False
     assert detail == "1 missing, 0 orphaned"
+
+
+def test_a_tombstone_is_not_reported_missing_from_fts(tmp_path: Path) -> None:
+    repo_path = asyncio.run(
+        _build_repo(
+            tmp_path,
+            second_page_id=PAGE_TOMBSTONE,
+            second_page_path="deleted.py",
+            second_freshness="tombstone",
+            index_second_in_vector=True,
+        )
+    )
+    rows = _rows(repo_path)
+
+    assert rows["SQL ↔ FTS Index"] == (True, "in sync")
+
+
+def test_a_tombstone_in_fts_is_reported_as_orphaned(tmp_path: Path) -> None:
+    repo_path = asyncio.run(
+        _build_repo(
+            tmp_path,
+            second_page_id=PAGE_TOMBSTONE,
+            second_page_path="deleted.py",
+            second_freshness="tombstone",
+            index_second_in_fts=True,
+            index_second_in_vector=True,
+        )
+    )
+    rows = _rows(repo_path)
+
+    assert rows["SQL ↔ FTS Index"] == (False, "0 missing, 1 orphaned")
 
 
 def test_a_failed_reconciliation_no_longer_passes_as_a_bare_note(tmp_path: Path) -> None:
