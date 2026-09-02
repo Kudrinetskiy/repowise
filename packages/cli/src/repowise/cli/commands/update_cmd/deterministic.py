@@ -224,9 +224,13 @@ def _render_pages(
             prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
-        # A template render takes every page it is fed; deterministic mode
-        # bypasses the budget already, so no page-id scoping is needed.
+        # Scope to the requested file pages. Besides preventing unrelated
+        # structural pages from entering this incremental result, the explicit
+        # ids tell selection that a persisted stale page must be retried even
+        # when its current parse has no symbols and would fail significance.
         with console.status("  Re-rendering wiki pages from structure…"):
+            from repowise.core.generation.models import compute_page_id
+
             return run_async(
                 generator.generate_all(
                     affected_parsed,
@@ -237,7 +241,9 @@ def _render_pages(
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
-                    only_page_ids=None,
+                    only_page_ids={
+                        compute_page_id("file_page", path) for path in regenerate_paths
+                    },
                 )
             )
     except Exception as exc:

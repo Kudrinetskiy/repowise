@@ -37,13 +37,17 @@ def _git(repo: Path, *args: str) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def _init_repo(base: Path) -> Path:
+def _init_repo(base: Path, *, extra_files: dict[str, str] | None = None) -> Path:
     repo = base / "repo"
     repo.mkdir()
     (repo / "main.py").write_text(
         "def greet(name: str) -> str:\n    return f'Hello, {name}'\n",
         encoding="utf-8",
     )
+    for relative_path, content in (extra_files or {}).items():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(
@@ -216,6 +220,38 @@ def test_stale_only_update_repairs_sql_and_fts_without_model_provider(
     assert STALE_SENTINEL not in fts_content
     assert "Re-rendered" in result.output
     assert not (repo / ".vscode").exists()
+
+
+def test_stale_page_is_refreshed_after_file_loses_all_symbols(tmp_path: Path) -> None:
+    repo = _init_repo(
+        tmp_path,
+        extra_files={"test_feature.py": "def test_feature() -> None:\n    assert True\n"},
+    )
+    page_id = _mark_file_page_stale(repo, "test_feature.py")
+    (repo / "test_feature.py").write_text("assert 1 + 1 == 2\n", encoding="utf-8")
+    _git(repo, "add", "test_feature.py")
+    _git(
+        repo,
+        "-c",
+        "user.name=RepoWise Test",
+        "-c",
+        "user.email=repowise-test@example.invalid",
+        "commit",
+        "-qm",
+        "remove the last symbol",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["update", str(repo), "--index-only", "--no-agents"],
+        catch_exceptions=True,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _stale_file_pages(repo) == 0
+    page_content, fts_content = _page_and_fts_content(repo, page_id)
+    assert STALE_SENTINEL not in page_content
+    assert STALE_SENTINEL not in fts_content
 
 
 def test_new_decay_only_file_page_is_refreshed_in_same_index_update(
