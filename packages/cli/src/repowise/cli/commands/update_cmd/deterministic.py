@@ -241,9 +241,7 @@ def _render_pages(
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
-                    only_page_ids={
-                        compute_page_id("file_page", path) for path in regenerate_paths
-                    },
+                    only_page_ids={compute_page_id("file_page", path) for path in regenerate_paths},
                 )
             )
     except Exception as exc:

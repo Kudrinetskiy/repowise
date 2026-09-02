@@ -570,9 +570,7 @@ def _run_repo_checks(
                     # only command that could fix the drift was the one the
                     # drift killed. Both repairs below work on either column
                     # set, so say what failed and carry on.
-                    console.print(
-                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]")
                 # Orphans first, deliberately. Deleting one needs nothing but
                 # its page_id, so it works on any column set this class has
                 # ever written — including the one an upgrade just failed to
