@@ -254,6 +254,60 @@ def test_stale_page_is_refreshed_after_file_loses_all_symbols(tmp_path: Path) ->
     assert STALE_SENTINEL not in fts_content
 
 
+def test_stale_file_page_refresh_bypasses_near_clone_dedupe(tmp_path: Path) -> None:
+    repo = _init_repo(
+        tmp_path,
+        extra_files={
+            "main.py": (
+                "from alpha import feature_alpha\n"
+                "from beta import feature_beta\n"
+                "from gamma import feature_gamma\n\n"
+                "def run() -> tuple[str, str, str]:\n"
+                "    return feature_alpha(), feature_beta(), feature_gamma()\n"
+            ),
+            "alpha.py": "def feature_alpha() -> str:\n    return 'alpha'\n",
+            "beta.py": "def feature_beta() -> str:\n    return 'beta'\n",
+            "gamma.py": "def feature_gamma() -> str:\n    return 'gamma'\n",
+        },
+    )
+    _stabilize_fixture(repo)
+    page_id = _mark_file_page_stale(repo, "gamma.py")
+
+    clone_content = "def feature() -> str:\n    return 'clone'\n"
+    for name in ("alpha.py", "beta.py", "gamma.py"):
+        (repo / name).write_text(clone_content, encoding="utf-8")
+    (repo / "main.py").write_text(
+        "from alpha import feature as alpha_feature\n"
+        "from beta import feature as beta_feature\n"
+        "from gamma import feature as gamma_feature\n\n"
+        "def run() -> tuple[str, str, str]:\n"
+        "    return alpha_feature(), beta_feature(), gamma_feature()\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "main.py", "alpha.py", "beta.py", "gamma.py")
+    _git(
+        repo,
+        "-c",
+        "user.name=RepoWise Test",
+        "-c",
+        "user.email=repowise-test@example.invalid",
+        "commit",
+        "-qm",
+        "make test files near clones",
+    )
+
+    result = _run(
+        [REPOWISE, "update", str(repo), "--index-only", "--no-agents"],
+        repo,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _stale_file_pages(repo) == 0
+    page_content, fts_content = _page_and_fts_content(repo, page_id)
+    assert STALE_SENTINEL not in page_content
+    assert STALE_SENTINEL not in fts_content
+
+
 def test_new_decay_only_file_page_is_refreshed_in_same_index_update(
     tmp_path: Path,
     monkeypatch,

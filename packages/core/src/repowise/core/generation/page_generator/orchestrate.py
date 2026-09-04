@@ -282,12 +282,23 @@ class _GenerationRun:
             and p.file_info.language in _CODE_LANGUAGES
         ]
         document_files = [p for p in self.parsed_files if _is_document_file(p)]
+        explicit_file_paths: set[str] = set()
+        if self.only_page_ids:
+            from repowise.core.generation.models import compute_page_id
+
+            explicit_file_paths = {
+                p.file_info.path
+                for p in self.parsed_files
+                if compute_page_id("file_page", p.file_info.path) in self.only_page_ids
+            }
 
         # Near-clone dedupe runs before scoring so clone losers never consume
-        # scoring budget. Entry points are never dropped.
+        # scoring budget. Entry points and explicitly scoped file pages are
+        # never dropped.
         parsed_files_for_selection = self.parsed_files
         if getattr(self.config, "dedupe_near_clones", True):
             drop_paths = _select_clone_representatives(code_files, self.pagerank)
+            drop_paths.difference_update(explicit_file_paths)
             if drop_paths:
                 log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
                 code_files = [p for p in code_files if p.file_info.path not in drop_paths]
@@ -332,13 +343,7 @@ class _GenerationRun:
             # be refreshed after its parser output loses every symbol: normal
             # selection may drop it, but leaving the persisted row stale makes
             # every later update retry the same impossible repair.
-            from repowise.core.generation.models import compute_page_id
-
-            self.sel_file_paths.update(
-                p.file_info.path
-                for p in parsed_files_for_selection
-                if compute_page_id("file_page", p.file_info.path) in self.only_page_ids
-            )
+            self.sel_file_paths.update(explicit_file_paths)
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)
         self.sel_module_groups = list(selection.module_groups)
