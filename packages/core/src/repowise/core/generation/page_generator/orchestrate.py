@@ -935,7 +935,9 @@ class _GenerationRun:
                     from ..kg_enrichment import enrich_tour_with_wiki_links
 
                     rp = (
-                        Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                        Path(self.repo_path)
+                        if not isinstance(self.repo_path, Path)
+                        else self.repo_path
                     )
                     kg_path = rp / ".repowise" / "knowledge-graph.json"
                     if kg_path.exists():

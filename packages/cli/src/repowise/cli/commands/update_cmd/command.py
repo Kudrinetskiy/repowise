@@ -428,12 +428,8 @@ def _render_full_upgrade_dry_run(
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
 
     console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
-    console.print(
-        f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]"
-    )
-    console.print(
-        f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]"
-    )
+    console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
+    console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
     console.print("  The whole-repository wiki would be generated. No changes made.")
 

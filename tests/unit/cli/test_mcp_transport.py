@@ -24,9 +24,7 @@ def test_mcp_help_lists_streamable_http_transport() -> None:
 def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(
         cli, ["mcp", str(tmp_path), "--tools", "+get_execution_flows,-get_dead_code"]
@@ -40,9 +38,7 @@ def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
 def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--all", "--tools", "get_answer"])
 
@@ -242,7 +238,16 @@ def test_mcp_cli_passes_host_to_run_mcp(monkeypatch, tmp_path: Path) -> None:
 
     result = CliRunner().invoke(
         cli,
-        ["mcp", str(tmp_path), "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "7342"],
+        [
+            "mcp",
+            str(tmp_path),
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "7342",
+        ],
     )
 
     assert result.exit_code == 0
@@ -475,4 +480,3 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
     CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert "error_leaves" not in recorded
-

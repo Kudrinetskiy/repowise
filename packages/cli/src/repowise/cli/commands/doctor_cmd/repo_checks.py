@@ -60,7 +60,6 @@ def _is_stub_fallback_row(page) -> bool:
     return isinstance(meta, dict) and STUB_FALLBACK_ERROR in meta
 
 
-
 async def _page_count(session: object, repo_id: str) -> int:
     """Count this repository's pages in SQL.
 
@@ -108,7 +107,6 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
         )
     )
     return list(result.all())
-
 
 
 def _run_repo_checks(
@@ -637,9 +635,7 @@ def _run_repo_checks(
                     # only command that could fix the drift was the one the
                     # drift killed. Both repairs below work on either column
                     # set, so say what failed and carry on.
-                    console.print(
-                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]")
                 # Orphans first, deliberately. Deleting one needs nothing but
                 # its page_id, so it works on any column set this class has
                 # ever written — including the one an upgrade just failed to
