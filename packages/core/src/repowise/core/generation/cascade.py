@@ -48,6 +48,7 @@ class PageDependencies:
     module_page_of: dict[str, str] = field(default_factory=dict)
     scc_pages_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
     repo_wide_ids: tuple[str, ...] = ()
+    current_generation_ids: frozenset[str] | None = None
 
     def containers_of(self, file_path: str) -> set[str]:
         """Module + SCC page ids that summarize *file_path*."""
@@ -84,9 +85,12 @@ def build_page_dependencies(
     + ``.file_paths``); ``scc_groups`` are ``(scc_id, files)`` pairs, exactly as
     :class:`~repowise.core.generation.selection.Selection` carries them.
     """
+    repo_wide = tuple(repo_wide_ids)
     module_page_of: dict[str, str] = {}
+    current_generation_ids: set[str] = set(repo_wide)
     for group in module_groups:
         page_id = compute_page_id("module_page", group.key)
+        current_generation_ids.add(page_id)
         for path in group.file_paths:
             module_page_of.setdefault(path, page_id)
 
@@ -99,7 +103,8 @@ def build_page_dependencies(
     return PageDependencies(
         module_page_of=module_page_of,
         scc_pages_of={p: tuple(v) for p, v in scc_pages_of.items()},
-        repo_wide_ids=tuple(repo_wide_ids),
+        repo_wide_ids=repo_wide,
+        current_generation_ids=frozenset(current_generation_ids),
     )
 
 

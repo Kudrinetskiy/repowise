@@ -127,6 +127,22 @@ def _inputs(parsed, pagerank, betweenness, community, cfg):
     )
 
 
+def test_near_clone_dedupe_is_part_of_shared_selection() -> None:
+    parsed = [
+        FakeParsedFile(FakeFileInfo(f"pkg/{name}.py"), [FakeSymbol("same_shape")])
+        for name in ("alpha", "beta", "gamma")
+    ]
+    pagerank = {p.file_info.path: 0.0 for p in parsed}
+    config = GenerationConfig(dedupe_near_clones=True)
+
+    selection = select_pages(_inputs(parsed, pagerank, {}, {}, config))
+
+    assert selection.file_page_paths == ["pkg/alpha.py"]
+    assert {path for group in selection.module_groups for path in group.file_paths} == {
+        "pkg/alpha.py"
+    }
+
+
 def test_every_production_file_gets_a_page():
     """No budget, so the file bucket is the whole floored candidate set."""
     parsed, pagerank, betweenness, community = _build_synthetic_repo(400)

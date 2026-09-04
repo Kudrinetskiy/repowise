@@ -9,7 +9,6 @@ docs and call sites reference them.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +16,8 @@ from typing import Any
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile
+
+from ..selection.near_clones import select_clone_representatives
 
 _INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
@@ -205,25 +206,11 @@ def _select_clone_representatives(
     Language-agnostic: works for any language whose symbols carry a kind+name,
     which the parser guarantees.
     """
-    clusters: dict[tuple[str, tuple[tuple[str, str], ...]], list[ParsedFile]] = defaultdict(list)
-    for p in code_files:
-        if p.file_info.is_entry_point or not p.symbols:
-            continue
-        parent = str(Path(p.file_info.path).parent.as_posix())
-        shape = tuple(sorted((str(s.kind), s.name) for s in p.symbols))
-        clusters[(parent, shape)].append(p)
-
-    drop: set[str] = set()
-    for members in clusters.values():
-        if len(members) < min_cluster_size:
-            continue
-        # Near-clones usually share a PageRank (often 0.0), so the path breaks
-        # the tie. Without it the survivor of each cluster changes between
-        # runs, and with it which file gets a page at all.
-        members.sort(key=lambda p: (-pagerank.get(p.file_info.path, 0.0), p.file_info.path))
-        for loser in members[1:]:
-            drop.add(loser.file_info.path)
-    return drop
+    return select_clone_representatives(
+        code_files,
+        pagerank,
+        min_cluster_size=min_cluster_size,
+    )
 
 
 def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:

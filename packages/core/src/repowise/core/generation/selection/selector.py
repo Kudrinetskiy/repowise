@@ -27,6 +27,7 @@ from ..concept_tree.naming import (
     disambiguate_titles,
 )
 from ..models import member_structural_key, scc_page_slug
+from .near_clones import select_clone_representatives
 from .scoring import (
     score_api_contract,
     score_file,
@@ -797,6 +798,18 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
+    if getattr(inputs.config, "dedupe_near_clones", True):
+        code_files = [parsed for parsed in inputs.parsed_files if _is_code_file(parsed)]
+        dropped = select_clone_representatives(code_files, inputs.pagerank)
+        if dropped:
+            log.info("page_selection.clone_dedupe", dropped=len(dropped))
+            inputs = replace(
+                inputs,
+                parsed_files=[
+                    parsed for parsed in inputs.parsed_files if parsed.file_info.path not in dropped
+                ],
+            )
+
     files = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)

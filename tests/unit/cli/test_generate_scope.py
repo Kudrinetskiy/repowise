@@ -173,9 +173,7 @@ def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
         PageRecord("file_page:a.py", "file_page", "a.py", is_template=True),
         PageRecord("file_page:b.py", "file_page", "b.py", is_template=True),
     ]
-    deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], repo_wide_ids=()
-    )
+    deps = build_page_dependencies(module_groups=[], scc_groups=[], repo_wide_ids=())
     # An all-selecting intent would pick both; the ranked seed overrides it.
     plan = resolve_scope(
         records=records,
@@ -187,3 +185,81 @@ def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
     assert plan.generate_ids == {"file_page:a.py"}
     assert plan.seed_count == 1
     assert plan.unknown_page_ids == ()
+
+
+def test_all_scope_replaces_retired_module_ids_with_current_selection() -> None:
+    records = [
+        PageRecord("file_page:pkg/current.py", "file_page", "pkg/current.py", is_template=False),
+        PageRecord("module_page:pkg/retired", "module_page", "pkg/retired", is_template=False),
+        PageRecord("repo_overview:demo", "repo_overview", "demo", is_template=False),
+        PageRecord(
+            "onboarding:project-overview",
+            "onboarding",
+            "project-overview",
+            is_template=False,
+        ),
+    ]
+
+    @dataclass(frozen=True)
+    class _MG:
+        key: str
+        file_paths: tuple[str, ...]
+
+    deps = build_page_dependencies(
+        module_groups=[_MG("pkg/current", ("pkg/current.py",))],
+        scc_groups=[],
+        repo_wide_ids=("repo_overview:demo", "onboarding:project-overview"),
+    )
+
+    plan = resolve_scope(
+        records=records,
+        intent=PageSelectionIntent(all_pages=True),
+        cascade_mode="none",
+        deps=deps,
+    )
+
+    assert plan.generate_ids == {
+        "file_page:pkg/current.py",
+        "module_page:pkg/current",
+        "repo_overview:demo",
+        "onboarding:project-overview",
+    }
+    assert plan.stale_ids == set()
+    assert plan.retired_page_ids == ("module_page:pkg/retired",)
+
+
+def test_explicit_retired_page_is_reported_and_not_generated() -> None:
+    records = [
+        PageRecord("module_page:pkg/retired", "module_page", "pkg/retired", is_template=False)
+    ]
+    deps = build_page_dependencies(
+        module_groups=[],
+        scc_groups=[],
+        repo_wide_ids=("repo_overview:demo",),
+    )
+
+    plan = resolve_scope(
+        records=records,
+        intent=PageSelectionIntent(page_ids=("module_page:pkg/retired",)),
+        cascade_mode="none",
+        deps=deps,
+    )
+
+    assert plan.generate_ids == set()
+    assert plan.retired_page_ids == ("module_page:pkg/retired",)
+    assert plan.unknown_page_ids == ()
+
+
+def test_current_generation_ids_include_rollup_modules_without_direct_files() -> None:
+    @dataclass(frozen=True)
+    class _MG:
+        key: str
+        file_paths: tuple[str, ...]
+
+    deps = build_page_dependencies(
+        module_groups=[_MG("pkg", ())],
+        scc_groups=[],
+        repo_wide_ids=("repo_overview:demo",),
+    )
+
+    assert deps.current_generation_ids == frozenset({"module_page:pkg", "repo_overview:demo"})

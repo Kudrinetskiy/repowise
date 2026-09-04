@@ -35,6 +35,9 @@ from repowise.core.generation.selection import Selection, SelectionInputs, selec
 
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
+_CONCEPT_PAGE_TYPES = frozenset(
+    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
+)
 
 # Structural pages the coverage budget does not rank: onboarding is curated, so
 # init emits every one of them at every coverage. A ranked run includes the
@@ -56,6 +59,7 @@ class ScopePlan:
     cost_plans: list[PageTypePlan]
     unknown_page_ids: tuple[str, ...]
     seed_count: int
+    retired_page_ids: tuple[str, ...] = ()
 
 
 def load_page_records(pages: list[Any]) -> list[PageRecord]:
@@ -285,7 +289,19 @@ def resolve_scope(
         seeds = resolve_page_selection(records, intent)
         seed_ids = set(seeds.page_ids)
         unknown = seeds.unknown_page_ids
-        seed_count = len(seeds)
+
+    retired: set[str] = set()
+    current_generation_ids = deps.current_generation_ids
+    if current_generation_ids is not None:
+        selected_concept_ids = {
+            pid for pid in seed_ids if pid.split(":", 1)[0] in _CONCEPT_PAGE_TYPES
+        }
+        retired = selected_concept_ids - current_generation_ids
+        seed_ids -= retired
+        if ranked_seed is None and intent.all_pages:
+            seed_ids.update(current_generation_ids)
+
+    seed_count = len(seed_ids)
 
     cascade: CascadeResult = expand_cascade(seed_ids, cascade_mode, deps)
     return ScopePlan(
@@ -294,4 +310,5 @@ def resolve_scope(
         cost_plans=build_cost_plans(cascade.generate_ids),
         unknown_page_ids=unknown,
         seed_count=seed_count,
+        retired_page_ids=tuple(sorted(retired)),
     )
