@@ -110,6 +110,7 @@ class _GenerationRun:
         only_page_ids: set[str] | None = None,
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
+        job_checkpoint_out: dict[str, Any] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -193,9 +194,11 @@ class _GenerationRun:
         # one opaque phase without it, and its levels differ by orders of
         # magnitude in cost, so a regression in one hides inside the total.
         self.timings = timings
+        self.job_checkpoint_out = job_checkpoint_out
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
         self.completed_ids: set[str] = set()
+        self.planned_page_ids: set[str] = set()
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
 
@@ -260,6 +263,11 @@ class _GenerationRun:
                 self.preserved_page_ids.add(page_id)
             return False
         return self.only_page_ids is None or page_id in self.only_page_ids
+
+    def _record_skip(self, page_id: str, reason: str) -> None:
+        """Record a page that was planned but rejected by a runtime gate."""
+        if self.job_system is not None and self.job_id is not None:
+            self.job_system.skip_page(self.job_id, page_id, reason)
 
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
@@ -497,62 +505,45 @@ class _GenerationRun:
         )
 
     def _announce_total(self) -> None:
-        # A scoped run emits exactly the requested-and-not-yet-done ids, so the
-        # selection-derived estimate below would badly over-count. The set is
-        # still an upper bound (a page may gate-skip at build time), matching
-        # the contract the caller reconciles against the real completed count.
         if self.only_page_ids is not None:
-            remaining_ids = self.only_page_ids - self.completed_ids
-            remaining = len(remaining_ids)
-            free_remaining = _count_free_ids(remaining_ids)
-            if self.on_total_known is not None:
-                self.on_total_known(free_remaining)
-            _announce_paid(self.on_subphase, remaining - free_remaining)
-            if self.job_system is not None and self.job_id is not None:
-                self.job_system.start_job(self.job_id, remaining)
-            return
-
-        counts = self.selection.counts()
-        # Level-8 onboarding pages (the non-promoted slots) also emit, and
-        # were previously omitted here, which made the progress total read
-        # lower than the pages actually generated (issue #922: "43 of 41").
-        # Counted in full like every other category above; the completed-id
-        # subtraction below nets out any already-generated slot on resume.
-        # This is still an upper bound: a slot may gate-skip at generation
-        # time (build_context -> None), so the caller reconciles the bar to
-        # the real completed count when generation finishes.
-        onboarding_page_count = 0
-        if getattr(self.config, "enable_onboarding", True):
+            self.planned_page_ids = set(self.only_page_ids) - self.completed_ids
+        else:
             from .. import onboarding as _onboarding
+            from ..scope import selection_page_ids
 
-            onboarding_page_count = len(_onboarding.iter_specs())
-        estimated_total = (
-            counts["api_contract"]
-            + counts["symbol_spotlight"]
-            + counts["file_page"]
-            + counts["scc_page"]
-            + counts["module_page"]
-            + int(self.selection.emit_repo_overview)
-            + counts["infra_page"]
-            + onboarding_page_count
-        )
-        # Split the total across the two progress bars. One bar counting both
-        # tiers reads as frozen: the free levels run first, so it reaches ~97%
-        # in minutes and then crawls for the rest of the run while the ~95
-        # model-backed pages finish. The paid count is the remainder rather
-        # than a second sum, so the two always add back to the total this
-        # already reported and the job system still books the whole run.
-        free_total = sum(counts.get(page_type, 0) for page_type in _free_page_types())
-        done_free = _count_free_ids(self.completed_ids)
-        remaining_free = max(0, free_total - done_free)
-        remaining_paid = max(
-            0, (estimated_total - free_total) - (len(self.completed_ids) - done_free)
-        )
+            planned = selection_page_ids(self.selection, self.repo_name)
+            if getattr(self.config, "enable_onboarding", True):
+                planned.update(
+                    compute_page_id("onboarding", _onboarding.target_path(spec.slot))
+                    for spec in _onboarding.iter_specs()
+                )
+            self.planned_page_ids = planned - self.completed_ids
+
+        remaining = len(self.planned_page_ids)
+        remaining_free = _count_free_ids(self.planned_page_ids)
+        remaining_paid = remaining - remaining_free
         if self.on_total_known is not None:
             self.on_total_known(remaining_free)
         _announce_paid(self.on_subphase, remaining_paid)
         if self.job_system is not None and self.job_id is not None:
-            self.job_system.start_job(self.job_id, estimated_total)
+            self.job_system.start_job(self.job_id, remaining)
+
+    def _reconcile_job_outcomes(self) -> None:
+        """Close every planned id as completed, failed, or explicitly skipped."""
+        if self.job_system is None or self.job_id is None:
+            return
+        checkpoint = self.job_system.get_checkpoint(self.job_id)
+        accounted = (
+            set(checkpoint.completed_page_ids)
+            | set(checkpoint.failed_page_ids)
+            | set(checkpoint.skipped_page_ids)
+        )
+        for page_id in sorted(self.planned_page_ids - accounted):
+            self.job_system.skip_page(
+                self.job_id,
+                page_id,
+                "not_emitted_by_current_selection",
+            )
 
     def _file_import_edges(self) -> list[tuple[str, str]]:
         """``(src, dst)`` import edges between file nodes (src imports dst)."""
@@ -714,6 +705,10 @@ class _GenerationRun:
                                 item = _embed_item(result)
                                 if item is not None:
                                     embed_items.append(item)
+                        elif result is None:
+                            if self.job_system is not None and self.job_id is not None:
+                                with timed(self.timings, "generation.checkpoint"):
+                                    self.job_system.skip_page(self.job_id, page_id, "runtime_gate")
                         return result
                     except Exception as exc:
                         if self.job_system is not None and self.job_id is not None:
@@ -951,7 +946,12 @@ class _GenerationRun:
                     log.debug("kg_enrichment.failed", error=str(exc))
 
             if self.job_system is not None and self.job_id is not None:
+                self._reconcile_job_outcomes()
                 self.job_system.complete_job(self.job_id)
+                if self.job_checkpoint_out is not None:
+                    self.job_checkpoint_out["checkpoint"] = self.job_system.get_checkpoint(
+                        self.job_id
+                    )
 
             log.info(
                 "Generation complete",

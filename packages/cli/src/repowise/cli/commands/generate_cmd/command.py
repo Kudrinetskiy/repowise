@@ -40,6 +40,30 @@ from repowise.core.generation.page_selection import PageSelectionIntent
 from .engine import run_scoped_generation
 
 
+def _format_completion_summary(outcome: Any, *, elapsed: float) -> str:
+    """Render a truthful final line for complete and partial generation runs."""
+    completed = len(outcome.completed_page_ids)
+    failed = len(outcome.failed_page_ids)
+    skipped = len(outcome.skipped_page_ids)
+    planned = completed + failed + skipped
+    notes: list[str] = []
+    if failed:
+        notes.append(f"{failed} failed")
+    if skipped:
+        notes.append(f"{skipped} skipped")
+    if outcome.marked_stale:
+        notes.append(f"{outcome.marked_stale} marked stale")
+    if outcome.remaining_template_pages:
+        notes.append(f"{outcome.remaining_template_pages} still unwritten")
+    elif not failed and not skipped:
+        notes.append("every page is now written")
+    suffix = f", {', '.join(notes)}" if notes else ""
+    return (
+        f"[bold green]Generated {completed} of {planned} pages[/bold green] "
+        f"in {elapsed:.1f}s{suffix}."
+    )
+
+
 def _build_intent(
     *,
     all_pages: bool,
@@ -302,16 +326,7 @@ def generate_command(
     _write_state(repo_path, state, provider, outcome)
 
     elapsed = time.monotonic() - start
-    tail = (
-        f", {outcome.remaining_template_pages} still unwritten"
-        if outcome.remaining_template_pages
-        else " — every page is now written"
-    )
-    stale_note = f", {outcome.marked_stale} marked stale" if outcome.marked_stale else ""
-    console.print(
-        f"[bold green]Generated {len(outcome.generated_pages)} pages[/bold green] "
-        f"in {elapsed:.1f}s{stale_note}{tail}."
-    )
+    console.print(_format_completion_summary(outcome, elapsed=elapsed))
     if embedder_upgraded:
         _reembed_after_upgrade(repo_path, embedder_name)
 

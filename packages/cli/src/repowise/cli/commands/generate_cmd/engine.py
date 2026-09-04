@@ -49,6 +49,9 @@ class GenerateOutcome:
     marked_stale: int
     remaining_template_pages: int
     plan: ScopePlan
+    completed_page_ids: tuple[str, ...] = ()
+    failed_page_ids: tuple[str, ...] = ()
+    skipped_page_ids: tuple[str, ...] = ()
 
 
 async def run_scoped_generation(
@@ -161,6 +164,11 @@ async def run_scoped_generation(
             console.print(
                 "[yellow]No such page(s), skipped:[/yellow] " + ", ".join(plan.unknown_page_ids)
             )
+        if plan.retired_page_ids:
+            console.print(
+                "[yellow]Pages no longer in the current selection, skipped:[/yellow] "
+                + ", ".join(plan.retired_page_ids)
+            )
         if not plan.generate_ids:
             console.print("[yellow]Nothing to generate for that selection.[/yellow]")
             return None
@@ -227,6 +235,9 @@ async def run_scoped_generation(
             marked_stale=result.marked_stale,
             remaining_template_pages=remaining_templates,
             plan=plan,
+            completed_page_ids=result.completed_page_ids,
+            failed_page_ids=result.failed_page_ids,
+            skipped_page_ids=result.skipped_page_ids,
         )
     finally:
         await engine.dispose()

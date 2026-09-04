@@ -256,6 +256,9 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     for mg in run.sel_module_groups:
+        page_id = compute_page_id("module_page", mg.key)
+        if not run._emit(page_id):
+            continue
         # Read from the wider set: a chapter's prose is about its whole
         # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
         # documents what. They are the same list for every leaf.
@@ -271,9 +274,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                 target_path=mg.key,
                 members=len(material),
             )
-            continue
-        page_id = compute_page_id("module_page", mg.key)
-        if not run._emit(page_id):
+            run._record_skip(page_id, "no_file_contexts")
             continue
         coros.append(
             (
@@ -461,9 +462,7 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # The only natural-language input the front page gets.
                     # Framing and vocabulary; the structural fields above stay
                     # the authority on paths, counts and package names.
-                    prose_digest=(
-                        readme_digest(Path(run.repo_path)) if run.repo_path else ""
-                    ),
+                    prose_digest=(readme_digest(Path(run.repo_path)) if run.repo_path else ""),
                 ),
             )
         )

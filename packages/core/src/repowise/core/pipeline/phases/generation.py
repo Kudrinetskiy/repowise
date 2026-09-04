@@ -53,6 +53,7 @@ async def run_generation(
     only_page_ids: set[str] | None = None,
     preserved_page_ids: set[str] | None = None,
     test_run: bool = False,
+    job_checkpoint_out: dict[str, Any] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -101,9 +102,7 @@ async def run_generation(
     # separate phase (init's generate_docs=False flow) — the flag's documented
     # purpose is to cap the *generation* work, and this is where that happens.
     if test_run:
-        parsed_files = limit_to_top_pagerank(
-            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
-        )
+        parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
@@ -204,6 +203,7 @@ async def run_generation(
         only_page_ids=only_page_ids,
         preserved_page_ids=preserved_page_ids,
         timings=getattr(progress, "table", None),
+        job_checkpoint_out=job_checkpoint_out,
     )
 
     # Onboarding summary — count generated slots and surface which ones

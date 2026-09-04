@@ -38,6 +38,12 @@ def _selection() -> SimpleNamespace:
         emit_repo_overview=False,
         emit_arch_diagram=False,
         deterministic_tail_paths=[],
+        file_page_paths=["src/example.py"],
+        module_groups=[],
+        scc_groups=[],
+        api_contract_paths=[],
+        infra_paths=[],
+        symbol_spotlights=[],
     )
 
 
@@ -48,7 +54,9 @@ def _fake_run(*, enable_onboarding: bool, completed_ids: set[str]) -> SimpleName
         selection=_selection(),
         kg_ctx=SimpleNamespace(available=False),
         config=SimpleNamespace(enable_onboarding=enable_onboarding),
+        repo_name="demo",
         completed_ids=completed_ids,
+        planned_page_ids=set(),
         # None: the selection-derived total path (a scoped run short-circuits
         # to len(only_page_ids), tested in test_deterministic_generation).
         only_page_ids=None,

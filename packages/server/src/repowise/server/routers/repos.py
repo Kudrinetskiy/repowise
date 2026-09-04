@@ -981,6 +981,7 @@ async def generate_estimate(
             "pages_by_type": {},
             "pages_to_mark_stale": 0,
             "unknown_page_ids": [],
+            "retired_page_ids": [],
             "provider": {"name": provider_name, "model": model_name, "error": provider_error},
             "estimate": None,
             "note": note,
@@ -1011,6 +1012,7 @@ async def generate_estimate(
         "pages_by_type": pages_by_type,
         "pages_to_mark_stale": len(plan.stale_ids),
         "unknown_page_ids": list(plan.unknown_page_ids),
+        "retired_page_ids": list(plan.retired_page_ids),
         "provider": {"name": provider_name, "model": model_name, "error": provider_error},
         "estimate": estimate,
     }

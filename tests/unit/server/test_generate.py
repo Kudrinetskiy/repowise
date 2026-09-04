@@ -259,8 +259,18 @@ def _fake_rehydrated(template_ids: list[str]) -> RehydratedRepo:
         )
         for pid in template_ids
     ]
+    module_groups = [
+        SimpleNamespace(key=pid.split(":", 1)[1], file_paths=())
+        for pid in template_ids
+        if pid.startswith("module_page:")
+    ]
+    repo_wide_ids = [
+        pid for pid in template_ids if pid.startswith(("repo_overview:", "onboarding:"))
+    ]
     deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], repo_wide_ids=[]
+        module_groups=module_groups,
+        scc_groups=[],
+        repo_wide_ids=repo_wide_ids,
     )
     return RehydratedRepo(
         graph_builder=MagicMock(),
@@ -303,7 +313,12 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
         page_id="module_page:a", title="a", content="x", input_tokens=10, output_tokens=20
     )
     execute_mock = AsyncMock(
-        return_value=ScopedGenerationResult(generated_pages=[written], marked_stale=0)
+        return_value=ScopedGenerationResult(
+            generated_pages=[written],
+            marked_stale=0,
+            completed_page_ids=("module_page:a",),
+            skipped_page_ids=("module_page:b",),
+        )
     )
     with (
         patch(
@@ -332,8 +347,12 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
     async with get_session(session_factory) as session:
         job = await crud.get_generation_job(session, job_id)
         assert job.status == "completed"
+        assert job.total_pages == 2
+        assert job.completed_pages == 1
+        assert job.failed_pages == 0
         cfg = json.loads(job.config_json)
         assert cfg["pages_generated"] == 1
+        assert cfg["skipped_page_ids"] == ["module_page:b"]
 
 
 def test_resolve_generate_scope_ranked_uses_build_ranked_seed() -> None:

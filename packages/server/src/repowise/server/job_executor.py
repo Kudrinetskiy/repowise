@@ -358,9 +358,7 @@ async def execute_job(
             mode = str(config.get("mode") or "sync")
             if mode not in VALID_JOB_MODES:
                 valid_str = ", ".join(sorted(VALID_JOB_MODES))
-                raise ValueError(
-                    f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-                )
+                raise ValueError(f"Invalid job mode '{mode}'. Expected one of: {valid_str}")
 
             is_full_resync = mode == "full_resync"
             is_initial_index = mode == "initial_index"
@@ -1015,6 +1013,9 @@ async def _run_generate_job(
 
     generated_pages: list = []
     marked_stale = 0
+    completed_page_ids: tuple[str, ...] = ()
+    failed_page_ids: tuple[str, ...] = ()
+    skipped_page_ids: tuple[str, ...] = ()
     if plan.generate_ids:
         progress.on_phase_start("generation", len(plan.generate_ids))
         gen_result = await execute_scoped_generation(
@@ -1038,6 +1039,9 @@ async def _run_generate_job(
         )
         generated_pages = gen_result.generated_pages
         marked_stale = gen_result.marked_stale
+        completed_page_ids = gen_result.completed_page_ids
+        failed_page_ids = gen_result.failed_page_ids
+        skipped_page_ids = gen_result.skipped_page_ids
     else:
         logger.info(
             "generate_job_empty_scope",
@@ -1050,10 +1054,18 @@ async def _run_generate_job(
     elapsed = time.monotonic() - start
     total_input = sum(getattr(p, "input_tokens", 0) for p in generated_pages)
     total_output = sum(getattr(p, "output_tokens", 0) for p in generated_pages)
-    from repowise.core.generation.models import count_stub_fallbacks
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
 
     pages_generated = len(generated_pages)
-    stub_fallbacks = count_stub_fallbacks(generated_pages)
+    if not (completed_page_ids or failed_page_ids or skipped_page_ids) and generated_pages:
+        failed_page_ids = tuple(
+            page.page_id
+            for page in generated_pages
+            if getattr(page, "metadata", {}).get(STUB_FALLBACK_ERROR) is not None
+        )
+        completed_page_ids = tuple(
+            page.page_id for page in generated_pages if page.page_id not in failed_page_ids
+        )
 
     async with get_session(session_factory) as session:
         job = await get_generation_job(session, job_id)
@@ -1068,6 +1080,9 @@ async def _run_generate_job(
                 # Surface requested-but-missing ids on the job record, not just in
                 # logs, so the UI can tell a caller a --page id resolved to nothing.
                 "unknown_page_ids": list(plan.unknown_page_ids),
+                "retired_page_ids": list(plan.retired_page_ids),
+                "failed_page_ids": list(failed_page_ids),
+                "skipped_page_ids": list(skipped_page_ids),
             }
         )
         if job is not None:
@@ -1076,9 +1091,9 @@ async def _run_generate_job(
             session,
             job_id,
             "completed",
-            completed_pages=pages_generated - stub_fallbacks,
-            failed_pages=stub_fallbacks,
-            total_pages=pages_generated,
+            completed_pages=len(completed_page_ids),
+            failed_pages=len(failed_page_ids),
+            total_pages=(len(completed_page_ids) + len(failed_page_ids) + len(skipped_page_ids)),
         )
         total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
 
@@ -1101,6 +1116,9 @@ async def _run_generate_job(
         "generate_job_completed",
         job_id=job_id,
         pages=pages_generated,
+        completed=len(completed_page_ids),
+        failed=len(failed_page_ids),
+        skipped=len(skipped_page_ids),
         marked_stale=marked_stale,
         elapsed=round(elapsed, 1),
     )
