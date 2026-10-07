@@ -76,7 +76,7 @@ def _inputs(
     parsed = [
         FakeParsedFile(
             file_info=FakeFileInfo(path=p, is_test=p.startswith("tests/")),
-            symbols=[FakeSymbol(name="fn")],
+            symbols=[FakeSymbol(name=f"fn_{Path(p).stem}")],
         )
         for p in paths
     ]
