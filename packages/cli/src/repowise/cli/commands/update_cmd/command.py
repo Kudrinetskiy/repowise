@@ -909,9 +909,7 @@ def run_update(
     legacy_config_change = config_changed and changed_dependencies is None
     dependency_changes = changed_dependencies or set()
     traversal_config_changed = (
-        legacy_config_change
-        or "traversal" in dependency_changes
-        or "other" in dependency_changes
+        legacy_config_change or "traversal" in dependency_changes or "other" in dependency_changes
     )
     git_config_changed = (
         legacy_config_change or traversal_config_changed or "git_history" in dependency_changes
@@ -930,8 +928,7 @@ def run_update(
         or "generation" in dependency_changes
     )
     config_rebuild_required = config_changed and bool(
-        legacy_config_change
-        or dependency_changes - {"state_only"}
+        legacy_config_change or dependency_changes - {"state_only"}
     )
 
     # A structural renderer upgrade is not a code change and not a config
@@ -1490,6 +1487,7 @@ def run_update(
     stale_extra = list(dict.fromkeys([*stale_renderer_paths, *stale_db_paths]))
     if stale_extra:
         affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_extra]))
+    structural_refresh_paths = list(dict.fromkeys([*stale_db_paths, *affected.decay_only]))
     if generation_config_changed:
         # Generation settings affect selection and repo-wide synthesis, not
         # merely the files touched by this commit. Recreate the same complete
@@ -1590,7 +1588,15 @@ def run_update(
                 "fingerprint was retained so the next update retries."
             ) from exc
 
-    if index_only:
+    stale_only = (
+        bool(stale_db_paths or stale_deterministic_ids)
+        and not file_diffs
+        and not config_changed
+        and not renderer_changed
+        and not analyzer_changed
+        and not extraction_changed
+    )
+    if index_only or stale_only:
         # A repo whose wiki was rendered from templates keeps it current here.
         # Re-rendering is free, so the changed files' pages are refreshed on
         # every update rather than frozen at the commit `init` ran on. Repos
@@ -1600,7 +1606,7 @@ def run_update(
         render_stats: dict[str, int] = {}
         index_only_cost = 0.0
         docs_mode = resolve_docs_mode(state)
-        if docs_mode == "deterministic":
+        if docs_mode == "deterministic" or structural_refresh_paths or stale_deterministic_ids:
             from .deterministic import (
                 load_prior_page_ids,
                 persist_deterministic_pages,
@@ -1618,6 +1624,11 @@ def run_update(
             # page that predates the single-renderer change re-renders to its
             # structural form here, which is the shape it now has.
             degraded_before_render = len(degraded)
+            deterministic_paths = (
+                list(dict.fromkeys([*affected.regenerate, *structural_refresh_paths]))
+                if docs_mode == "deterministic"
+                else structural_refresh_paths
+            )
             with timed(timings, "render"):
                 det_pages = regenerate_deterministic_pages(
                     repo_path=repo_path,
@@ -1626,7 +1637,7 @@ def run_update(
                     graph_builder=graph_builder,
                     repo_structure=repo_structure,
                     git_meta_map=git_meta_map,
-                    regenerate_paths=affected.regenerate,
+                    regenerate_paths=deterministic_paths,
                     cfg=cfg,
                     concurrency=concurrency,
                     degraded=degraded,
@@ -1659,21 +1670,31 @@ def run_update(
                     "fingerprint was retained so the next update retries."
                 )
 
-            if det_pages:
+            rendered_paths = {
+                page.target_path
+                for page in det_pages
+                if page.page_type == "file_page" and page.target_path
+            }
+            unresolved_paths = [path for path in deterministic_paths if path not in rendered_paths]
+            persistence_ok = True
+            try:
                 # Its own session, apart from the index persist below, so it
                 # is its own row rather than a ``persist.*`` one.
                 with timed(timings, "render.persist"):
                     state["total_pages"] = persist_deterministic_pages(
                         repo_path=repo_path,
                         generated_pages=det_pages,
-                        # decay_only are cascade-reached templates the render
-                        # did not touch: marked stale so the view stays honest
-                        # about which pages predate this commit.
-                        decay_paths=affected.decay_only,
+                        decay_paths=unresolved_paths,
                         degraded=degraded,
                     )
-                if head:
-                    state["last_docs_commit"] = head
+            except Exception as exc:
+                if config_rebuild_required:
+                    raise
+                persistence_ok = False
+                degraded.append(f"Template page persistence: {exc}")
+            if persistence_ok and det_pages and not unresolved_paths and head:
+                state["last_docs_commit"] = head
+            if persistence_ok and det_pages:
                 console.print(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
                     "wiki pages from structure"
@@ -2309,6 +2330,45 @@ def run_update(
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
 
+    # A model-budget overflow is still a free structural refresh for a file
+    # page. Repair those pages in this run, not only on the next idle update.
+    generated_file_paths = {
+        page.target_path
+        for page in generated_pages
+        if page.page_type == "file_page" and page.target_path
+    }
+    extra_structural_paths = [
+        path for path in structural_refresh_paths if path not in generated_file_paths
+    ]
+    if extra_structural_paths:
+        from .deterministic import load_prior_page_ids, regenerate_deterministic_pages
+
+        with timed(timings, "render.files"):
+            structural_pages = regenerate_deterministic_pages(
+                repo_path=repo_path,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                git_meta_map=git_meta_map,
+                regenerate_paths=extra_structural_paths,
+                cfg=cfg,
+                concurrency=concurrency,
+                degraded=degraded,
+                dead_code_report=dead_code_report,
+                prior_page_ids=load_prior_page_ids(repo_path),
+                stats_out=full_stats,
+            )
+        generated_pages.extend(structural_pages)
+        generated_file_paths.update(
+            page.target_path
+            for page in structural_pages
+            if page.page_type == "file_page" and page.target_path
+        )
+    unresolved_structural_paths = [
+        path for path in structural_refresh_paths if path not in generated_file_paths
+    ]
+
     # SCC pages are deterministic but describe the complete graph, so the
     # changed-file generator above cannot safely refresh them. Render only the
     # stale structural ids from the complete repository view with the template
@@ -2394,7 +2454,7 @@ def run_update(
                 knowledge_graph_result=knowledge_graph_result,
                 degraded=degraded,
                 doc_drift_report=doc_drift_report,
-                decay_paths=affected.decay_only,
+                decay_paths=unresolved_structural_paths,
                 parsed_files=parsed_files,
                 git_decay_map=git_decay_map,
                 full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
@@ -2551,7 +2611,7 @@ def run_update(
         return UpdateOutcome.REGENERATED
     show_full_completion(
         generated_pages=generated_pages,
-        decay_count=len(affected.decay_only),
+        decay_count=len(unresolved_structural_paths),
         decisions_changed=len(new_decision_markers) + len(session_decisions) + decisions_evolved,
         provider=provider,
         cost=cost_tracker.session_cost,

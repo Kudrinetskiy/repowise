@@ -218,6 +218,19 @@ def _render_pages(
     if not affected_parsed:
         return []
 
+    if not complete_context:
+        from repowise.core.generation.models import compute_page_id
+
+        # File ids make an existing page an explicit repair even if normal
+        # significance or near-clone selection would now omit its source.
+        # Keep the native spotlight selection, rather than narrowing this
+        # incremental run to file pages only.
+        only_page_ids = {compute_page_id("file_page", path) for path in regenerate_paths} | {
+            compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{symbol.name}")
+            for pf in affected_parsed
+            for symbol in pf.symbols
+        }
+
     try:
         config = GenerationConfig.from_repo_config(
             cfg,
@@ -247,6 +260,9 @@ def _render_pages(
                 )
             except Exception as exc:  # embedding is optional; FTS still indexes
                 degraded.append(f"Page embedding: {exc}")
+                # A failed configured backend cannot publish a fresh SQL row.
+                # Withhold this repair so the stale target wakes the next run.
+                return []
 
         generator = PageGenerator(
             TemplateProvider(),
@@ -261,8 +277,8 @@ def _render_pages(
             prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
-        # A template render takes every page it is fed; deterministic mode
-        # bypasses the budget already, so no page-id scoping is needed.
+        # Explicit incremental ids carry repair intent through selection;
+        # full repository refreshes retain their normal complete selection.
         with console.status("  Re-rendering wiki pages from structure…"):
             pages = run_async(
                 generator.generate_all(
@@ -283,6 +299,10 @@ def _render_pages(
             stats_out["embed_failed_pages"] = (
                 stats_out.get("embed_failed_pages", 0) + generator.embed_failed_pages
             )
+        if generator.embed_failed_pages:
+            # The caller still reports the native fatal embedding signal, but
+            # must not upsert these unembedded pages as fresh first.
+            return []
         return pages
     except Exception as exc:
         degraded.append(f"{degrade_label}: {exc}")
@@ -395,6 +415,19 @@ async def _persist_async(
             await fts.index_pages(generated_pages)
         except Exception as exc:
             degraded.append(f"Full-text index: {exc}")
+            # The SQL transaction has committed before the independent FTS
+            # batch. Keep every partially persisted page retryable, including
+            # spotlights and repository-scoped deterministic page ids.
+            try:
+                from repowise.core.pipeline.persist import mark_page_ids_stale
+
+                async with get_session(sf) as session:
+                    await mark_page_ids_stale(
+                        session, repo_id, [page.page_id for page in generated_pages]
+                    )
+            except Exception as stale_exc:
+                degraded.append(f"Freshness rollback: {stale_exc}")
+            raise
     finally:
         await engine.dispose()
     return total

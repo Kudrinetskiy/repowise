@@ -72,6 +72,8 @@ def test_exact_structural_refresh_uses_full_context_without_model(
             return cls()
 
     class _Generator:
+        embed_failed_pages = 0
+
         def __init__(self, provider, _assembler, _config, **_kwargs):
             captured["provider"] = type(provider).__name__
 
