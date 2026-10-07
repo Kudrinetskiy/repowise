@@ -6,6 +6,7 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -571,6 +572,8 @@ async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
+    mcp_mod._vector_store_ready = asyncio.Event()
+    mcp_mod._vector_store_ready.set()
     mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
     mcp_mod._repo_path = str(tmp_path)
 
@@ -580,6 +583,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     mcp_mod._session_factory = None
     mcp_mod._fts = None
     mcp_mod._vector_store = None
+    mcp_mod._vector_store_ready = None
     mcp_mod._decision_store = None
     mcp_mod._repo_path = None
     mcp_mod._registry = None
@@ -639,7 +643,12 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "function_name": "authenticate",
                 "line_start": 10,
                 "line_end": 80,
-                "details": {"ccn": 15, "cognitive": 30, "nloc": 70, "deepest_block": {"start": 40, "end": 52}},
+                "details": {
+                    "ccn": 15,
+                    "cognitive": 30,
+                    "nloc": 70,
+                    "deepest_block": {"start": 40, "end": 52},
+                },
                 "health_impact": 1.2,
                 "reason": "authenticate has cyclomatic complexity 15",
             },

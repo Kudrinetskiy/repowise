@@ -101,7 +101,7 @@ def test_the_scoped_path_sweeps_superseded_rows():
     """
     module = __import__("repowise.core.pipeline.scoped_generation", fromlist=["*"])
     source = inspect.getsource(module)
-    assert "sweep_superseded_generated_pages(\n" in source, (
+    assert "sweep_superseded_generated_pages(" in source, (
         "a scoped regeneration writes pages without retiring the rows they "
         "supersede, so a membership change strands the old page as a duplicate"
     )
@@ -111,6 +111,6 @@ def test_the_scoped_sweep_runs_before_the_tree_is_rebuilt():
     """Order matters: a retired row must not be handed a place in the tree."""
     module = __import__("repowise.core.pipeline.scoped_generation", fromlist=["*"])
     source = inspect.getsource(module)
-    sweep = source.index("sweep_superseded_generated_pages(\n")
+    sweep = source.index("sweep_superseded_generated_pages(")
     rebuild = source.index("await rebuild_page_tree(")
     assert sweep < rebuild
