@@ -145,9 +145,7 @@ async def _stored_vocabulary(conn: Any, page_ids: Sequence[str]) -> dict[str, st
 # ``NOT EXISTS`` rather than ``NOT IN``: the subquery's column is a primary key
 # and can never be NULL today, but ``NOT IN`` returns no rows at all the day one
 # is, which would turn this into a silent no-op instead of a visible failure.
-_ORPHAN_PREDICATE = (
-    "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id)"
-)
+_ORPHAN_PREDICATE = "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id)"
 _ORPHAN_COUNT_SQL = f"SELECT count(*) FROM page_fts WHERE {_ORPHAN_PREDICATE}"
 _ORPHAN_DELETE_SQL = f"DELETE FROM page_fts WHERE {_ORPHAN_PREDICATE}"
 
@@ -316,7 +314,9 @@ class FullTextSearch:
 
             indexed_rows = await conn.execute(text("SELECT count(*) FROM page_fts"))
             indexed_count = int(indexed_rows.scalar() or 0)
-            page_rows = await conn.execute(text("SELECT count(*) FROM wiki_pages"))
+            page_rows = await conn.execute(
+                text("SELECT count(*) FROM wiki_pages WHERE freshness_status != 'tombstone'")
+            )
             page_count = int(page_rows.scalar() or 0)
             orphan_count = await self._count_orphans(conn)
 
@@ -366,15 +366,16 @@ class FullTextSearch:
                     "SELECT id, COALESCE(title,''), COALESCE(content,''), "
                     "       COALESCE(summary,''), COALESCE(target_path,''), "
                     f"      {_VOCABULARY_SQL}, COALESCE(digest,'') "
-                    "FROM wiki_pages"
+                    "FROM wiki_pages WHERE freshness_status != 'tombstone'"
                 )
             )
             written = await conn.execute(text("SELECT count(*) FROM page_fts"))
             refilled = int(written.scalar() or 0)
 
         if refilled != page_count:
-            # Nothing in the statement above should be able to drop a row, so
-            # a mismatch means the page table moved underneath the rebuild.
+            # Tombstones are historical link targets, never search candidates.
+            # The count uses the same eligible set as the refill; a mismatch
+            # means the page table moved underneath the rebuild.
             _log.warning("page_fts rebuild wrote %d rows for %d pages", refilled, page_count)
 
     @staticmethod
@@ -479,10 +480,7 @@ class FullTextSearch:
         """
         for chunk in chunked(list(pages)):
             await self.index_many(
-                [
-                    (p.page_id, p.title, p.content, p.summary, p.target_path, p.digest)
-                    for p in chunk
-                ]
+                [(p.page_id, p.title, p.content, p.summary, p.target_path, p.digest) for p in chunk]
             )
 
     async def index_many(

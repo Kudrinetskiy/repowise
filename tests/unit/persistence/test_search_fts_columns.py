@@ -92,6 +92,42 @@ async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, asyn
     assert indexed[0][2] == "src/main.py"
 
 
+@pytest.mark.parametrize(
+    "old_ddl",
+    [
+        _OLD_SCHEMA_DDL,
+        "CREATE VIRTUAL TABLE page_fts USING fts5("
+        "page_id UNINDEXED, title, content, summary, target_path, vocabulary)",
+    ],
+)
+async def test_schema_upgrade_does_not_resurrect_tombstones(
+    async_engine, async_session, repo, old_ddl
+):
+    """Widening an index must not return a retired source to search results."""
+    await _seed_page(async_session, repo.id)
+    await _seed_page(
+        async_session,
+        repo.id,
+        page_id="file_page:src/retired.py",
+        target_path="src/retired.py",
+        content="Retained historical prose about retired xylophone services.",
+        freshness_status="tombstone",
+    )
+    async with async_engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS page_fts"))
+        await conn.execute(text(old_ddl))
+        before = (await conn.execute(text("SELECT * FROM wiki_pages ORDER BY id"))).fetchall()
+
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+
+    assert await fts.list_indexed_ids() == {"file_page:src/main.py"}
+    assert await fts.search("xylophone") == []
+    async with async_engine.connect() as conn:
+        after = (await conn.execute(text("SELECT * FROM wiki_pages ORDER BY id"))).fetchall()
+    assert after == before
+
+
 async def test_summary_only_match_returns_the_page(async_engine, async_session, repo):
     """A word that appears in the summary and nowhere else still finds the page."""
     await _seed_page(
@@ -200,9 +236,7 @@ async def _indexed_ids(engine) -> set[str]:
         return {r[0] for r in rows.fetchall()}
 
 
-async def test_rebuild_discards_orphans_instead_of_refusing(
-    async_engine, async_session, repo
-):
+async def test_rebuild_discards_orphans_instead_of_refusing(async_engine, async_session, repo):
     """An index holding more rows than ``wiki_pages`` still upgrades (#1309).
 
     The excess is orphans: rows whose page was swept from SQL while the FTS
@@ -265,9 +299,7 @@ async def test_rebuild_leaves_the_old_index_alone_when_wiki_pages_is_missing(asy
     assert await _indexed_ids(async_engine) == {"p1"}
 
 
-async def test_prune_orphans_removes_rows_whose_page_is_gone(
-    async_engine, async_session, repo
-):
+async def test_prune_orphans_removes_rows_whose_page_is_gone(async_engine, async_session, repo):
     """The residue of a sweep whose FTS delete never ran.
 
     Six call sites delete pages from SQL and their index rows afterwards,
@@ -295,9 +327,7 @@ async def test_prune_orphans_is_a_no_op_on_a_clean_store(async_engine, async_ses
     assert await _indexed_ids(async_engine) == {"file_page:src/main.py"}
 
 
-async def test_ensure_index_prunes_orphans_on_a_current_schema(
-    async_engine, async_session, repo
-):
+async def test_ensure_index_prunes_orphans_on_a_current_schema(async_engine, async_session, repo):
     """The self-heal cannot depend on there being a column upgrade to do.
 
     A store already on the current shape is where the orphans of an
@@ -355,9 +385,7 @@ async def test_a_vocabulary_only_term_finds_the_page_without_an_embedder(
     assert "xylophone" not in results[0].snippet
 
 
-async def test_upgrade_refills_the_vocabulary_from_page_metadata(
-    async_engine, async_session, repo
-):
+async def test_upgrade_refills_the_vocabulary_from_page_metadata(async_engine, async_session, repo):
     """A store indexed before the column existed gains it, populated."""
     await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
     async with async_engine.begin() as conn:
@@ -386,15 +414,17 @@ async def test_unreadable_page_metadata_indexes_without_a_vocabulary(
     fts = FullTextSearch(async_engine)
     await fts.ensure_index()
     await fts.index(
-        "file_page:src/main.py", "File: src/main.py", "Entry point body.", summary="", target_path=""
+        "file_page:src/main.py",
+        "File: src/main.py",
+        "Entry point body.",
+        summary="",
+        target_path="",
     )
 
     assert [r.page_id for r in await fts.search("entry point")] == ["file_page:src/main.py"]
 
 
-async def test_the_vocabulary_and_the_digest_are_both_searchable(
-    async_engine, async_session, repo
-):
+async def test_the_vocabulary_and_the_digest_are_both_searchable(async_engine, async_session, repo):
     """Two columns kept off the rendered body, one per kind of reader-invisible text."""
     await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
     fts = FullTextSearch(async_engine)
