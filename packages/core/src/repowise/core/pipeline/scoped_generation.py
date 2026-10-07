@@ -71,6 +71,10 @@ class ScopedGenerationResult:
     #: covered. Reported so an update can say it removed a duplicate rather
     #: than doing it silently.
     swept_page_ids: list[str] = field(default_factory=list)
+    completed_page_ids: tuple[str, ...] = ()
+    failed_page_ids: tuple[str, ...] = ()
+    skipped_page_ids: tuple[str, ...] = ()
+    skip_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def load_kg_context(repo_path: Path) -> Any:
@@ -217,6 +221,7 @@ async def execute_scoped_generation(
     if cost_tracker is not None:
         provider._cost_tracker = cost_tracker
 
+    job_checkpoint_out: dict[str, Any] = {}
     generated_pages = await run_generation(
         repo_path=repo_path,
         parsed_files=rehydrated.parsed_files,
@@ -232,6 +237,7 @@ async def execute_scoped_generation(
         cost_tracker=cost_tracker,
         generation_config=generation_config,
         only_page_ids=plan.generate_ids,
+        job_checkpoint_out=job_checkpoint_out,
     )
     if cost_tracker is not None:
         await cost_tracker.flush()
@@ -246,9 +252,7 @@ async def execute_scoped_generation(
         # runs a full index, because the full sweep cannot run here — it would
         # delete every page of a type this run did not reproduce, which on a
         # scoped run is nearly all of them.
-        swept_page_ids = await sweep_superseded_generated_pages(
-            session, repo_id, generated_pages
-        )
+        swept_page_ids = await sweep_superseded_generated_pages(session, repo_id, generated_pages)
         # Rows of a page type that no longer exists. Safe on a scoped run
         # precisely because it does not ask what the run produced: nothing can
         # emit a retired type, so absence is never evidence of a narrow scope.
@@ -305,8 +309,29 @@ async def execute_scoped_generation(
         except Exception as exc:
             logger.debug("fts_index_skipped", error=str(exc))
 
+    checkpoint = job_checkpoint_out.get("checkpoint")
+    if checkpoint is not None:
+        completed_page_ids = tuple(checkpoint.completed_page_ids)
+        failed_page_ids = tuple(checkpoint.failed_page_ids)
+        skipped_page_ids = tuple(checkpoint.skipped_page_ids)
+        skip_reasons = dict(checkpoint.skip_reasons)
+    else:
+        from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+        failed_page_ids = tuple(
+            p.page_id for p in generated_pages if STUB_FALLBACK_ERROR in (p.metadata or {})
+        )
+        generated_ids = {p.page_id for p in generated_pages}
+        completed_page_ids = tuple(sorted(generated_ids - set(failed_page_ids)))
+        skipped_page_ids = tuple(sorted(set(plan.generate_ids) - generated_ids))
+        skip_reasons = {pid: "not_emitted_by_current_selection" for pid in skipped_page_ids}
+
     return ScopedGenerationResult(
         generated_pages=generated_pages,
         marked_stale=marked_stale,
         swept_page_ids=swept_page_ids,
+        completed_page_ids=completed_page_ids,
+        failed_page_ids=failed_page_ids,
+        skipped_page_ids=skipped_page_ids,
+        skip_reasons=skip_reasons,
     )

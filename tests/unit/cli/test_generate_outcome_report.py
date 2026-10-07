@@ -88,3 +88,24 @@ def test_clean_run_prints_no_leftover_lines() -> None:
     assert "Cost: $0.000 (0 tokens)." in out
     assert "Every concept page is now written." in out
     assert "stale" not in out
+
+
+def test_partial_run_does_not_claim_every_concept_page_is_written() -> None:
+    out = _render(_outcome(remaining_template_pages=0))
+    assert "Every concept page is now written." not in out
+
+
+def test_explicit_skips_are_reported_separately_from_retirement() -> None:
+    out = _render(
+        _outcome(
+            skipped_page_ids=("module_page:m7",),
+            failed_page_ids=("module_page:m8",),
+            skip_reasons={"module_page:m7": "no_file_contexts"},
+            remaining_template_pages=0,
+        )
+    )
+    assert "3 retired" in out
+    assert "1 skipped" in out
+    assert "2 failed" in out
+    assert "1 not produced" in out
+    assert "Every concept page is now written." not in out

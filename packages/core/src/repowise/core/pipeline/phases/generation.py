@@ -56,6 +56,7 @@ async def run_generation(
     selection_out: dict[str, Any] | None = None,
     persisted_page_ids: set[str] | None = None,
     stats_out: dict[str, int] | None = None,
+    job_checkpoint_out: dict[str, Any] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -79,6 +80,9 @@ async def run_generation(
     ``stats_out`` is filled with ``embed_failed_pages``: how many pages this
     run failed to embed, so a caller can refuse to call semantic search
     healthy after a failed write.
+
+    ``job_checkpoint_out`` receives the final generation checkpoint, so scoped
+    callers can distinguish completed, failed, and intentionally skipped IDs.
 
     ``test_run`` limits generation to the top 10 files by PageRank, so a quick
     validation run can exercise the whole generation path without paying for a
@@ -222,6 +226,7 @@ async def run_generation(
         timings=getattr(progress, "table", None),
         on_warning=on_warning,
         persisted_page_ids=persisted_page_ids,
+        job_checkpoint_out=job_checkpoint_out,
     )
     if stats_out is not None:
         stats_out["embed_failed_pages"] = generator.embed_failed_pages

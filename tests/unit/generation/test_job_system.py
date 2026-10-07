@@ -45,6 +45,67 @@ def test_create_job_status_is_pending(tmp_path):
     assert cp.status == "pending"
 
 
+def test_checkpoint_from_legacy_json_defaults_skip_fields() -> None:
+    cp = Checkpoint.from_dict(
+        {
+            "job_id": "legacy",
+            "status": "completed",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "repo_path": ".",
+        }
+    )
+    assert cp.skipped_pages == 0
+    assert cp.skipped_page_ids == []
+    assert cp.skip_reasons == {}
+
+
+def test_skip_page_is_idempotent_and_durable(tmp_path):
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 1)
+    js.skip_page(job_id, "module_page:empty", "no_file_contexts")
+    js.skip_page(job_id, "module_page:empty", "no_file_contexts")
+
+    cp = JobSystem(tmp_path / "jobs").get_checkpoint(job_id)
+    assert cp.skipped_pages == 1
+    assert cp.skipped_page_ids == ["module_page:empty"]
+    assert cp.skip_reasons == {"module_page:empty": "no_file_contexts"}
+
+
+@pytest.mark.parametrize(
+    ("first", "last"),
+    [
+        ("skip", "complete"),
+        ("fail", "complete"),
+        ("complete", "skip"),
+        ("fail", "skip"),
+        ("complete", "fail"),
+        ("skip", "fail"),
+    ],
+)
+def test_page_outcomes_remain_mutually_exclusive(tmp_path, first, last):
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 1)
+    page_id = "module_page:pkg"
+    actions = {
+        "complete": lambda: js.complete_page(job_id, page_id),
+        "fail": lambda: js.fail_page(job_id, page_id, "provider failed"),
+        "skip": lambda: js.skip_page(job_id, page_id, "not_emitted"),
+    }
+    actions[first]()
+    actions[last]()
+    js.complete_job(job_id)
+
+    cp = JobSystem(tmp_path / "jobs").get_checkpoint(job_id)
+    assert cp.completed_page_ids == ([page_id] if last == "complete" else [])
+    assert cp.failed_page_ids == ([page_id] if last == "fail" else [])
+    assert cp.skipped_page_ids == ([page_id] if last == "skip" else [])
+    assert cp.skip_reasons == ({page_id: "not_emitted"} if last == "skip" else {})
+    assert cp.total_pages == cp.completed_pages + cp.failed_pages + cp.skipped_pages == 1
+
+
 def test_create_job_serializes_public_evidence_mapping_shape(tmp_path):
     js = _make_system(tmp_path)
     config = GenerationConfig(

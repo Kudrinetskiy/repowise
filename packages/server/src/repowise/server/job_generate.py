@@ -209,6 +209,10 @@ async def _run_generate_job(
 
     generated_pages: list = []
     marked_stale = 0
+    completed_page_ids: tuple[str, ...] = ()
+    failed_page_ids: tuple[str, ...] = ()
+    skipped_page_ids: tuple[str, ...] = ()
+    skip_reasons: dict[str, str] = {}
     if plan.generate_ids:
         progress.on_phase_start("generation", len(plan.generate_ids))
         gen_result = await execute_scoped_generation(
@@ -230,6 +234,10 @@ async def _run_generate_job(
         )
         generated_pages = gen_result.generated_pages
         marked_stale = gen_result.marked_stale
+        completed_page_ids = gen_result.completed_page_ids
+        failed_page_ids = gen_result.failed_page_ids
+        skipped_page_ids = gen_result.skipped_page_ids
+        skip_reasons = gen_result.skip_reasons
     else:
         logger.info(
             "generate_job_empty_scope",
@@ -242,10 +250,19 @@ async def _run_generate_job(
     elapsed = time.monotonic() - start
     total_input = sum(getattr(p, "input_tokens", 0) for p in generated_pages)
     total_output = sum(getattr(p, "output_tokens", 0) for p in generated_pages)
-    from repowise.core.generation.models import count_stub_fallbacks
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
 
     pages_generated = len(generated_pages)
-    stub_fallbacks = count_stub_fallbacks(generated_pages)
+    if not (completed_page_ids or failed_page_ids or skipped_page_ids):
+        failed_page_ids = tuple(
+            p.page_id
+            for p in generated_pages
+            if STUB_FALLBACK_ERROR in (getattr(p, "metadata", {}) or {})
+        )
+        produced = {p.page_id for p in generated_pages}
+        completed_page_ids = tuple(sorted(produced - set(failed_page_ids)))
+        skipped_page_ids = tuple(sorted(plan.generate_ids - produced))
+        skip_reasons = {pid: "not_emitted_by_current_selection" for pid in skipped_page_ids}
 
     async with get_session(session_factory) as session:
         await _complete_job_row(
@@ -260,10 +277,14 @@ async def _run_generate_job(
                 "pages_marked_stale": marked_stale,
                 # On the job record so the UI can report an id that resolved to nothing.
                 "unknown_page_ids": list(plan.unknown_page_ids),
+                "retired_page_ids": list(plan.retired_page_ids),
+                "failed_page_ids": list(failed_page_ids),
+                "skipped_page_ids": list(skipped_page_ids),
+                "skip_reasons": skip_reasons,
             },
-            completed_pages=pages_generated - stub_fallbacks,
-            failed_pages=stub_fallbacks,
-            total_pages=pages_generated,
+            completed_pages=len(completed_page_ids),
+            failed_pages=len(failed_page_ids),
+            total_pages=len(completed_page_ids) + len(failed_page_ids) + len(skipped_page_ids),
         )
         total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
 
@@ -284,6 +305,9 @@ async def _run_generate_job(
         "generate_job_completed",
         job_id=job_id,
         pages=pages_generated,
+        completed=len(completed_page_ids),
+        failed=len(failed_page_ids),
+        skipped=len(skipped_page_ids),
         marked_stale=marked_stale,
         elapsed=round(elapsed, 1),
     )

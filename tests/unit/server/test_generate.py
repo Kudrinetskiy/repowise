@@ -19,7 +19,7 @@ from repowise.core.generation.cascade import build_page_dependencies
 from repowise.core.generation.page_selection import PageRecord, PageSelectionIntent
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.pipeline.scoped_generation import RehydratedRepo, ScopedGenerationResult
+from repowise.core.pipeline.scoped_generation import RehydratedRepo
 from repowise.server.job_executor import _build_generate_intent
 from tests.unit.server.conftest import create_test_repo
 
@@ -260,7 +260,13 @@ def _fake_rehydrated(template_ids: list[str]) -> RehydratedRepo:
         for pid in template_ids
     ]
     deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], repo_wide_ids=[]
+        module_groups=[
+            SimpleNamespace(key=pid.split(":", 1)[1], file_paths=())
+            for pid in template_ids
+            if pid.startswith("module_page:")
+        ],
+        scc_groups=[],
+        repo_wide_ids=[],
     )
     return RehydratedRepo(
         graph_builder=MagicMock(),
@@ -303,7 +309,15 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
         page_id="module_page:a", title="a", content="x", input_tokens=10, output_tokens=20
     )
     execute_mock = AsyncMock(
-        return_value=ScopedGenerationResult(generated_pages=[written], marked_stale=0)
+        return_value=SimpleNamespace(
+            generated_pages=[written],
+            marked_stale=0,
+            swept_page_ids=[],
+            completed_page_ids=("module_page:a",),
+            failed_page_ids=(),
+            skipped_page_ids=("module_page:b",),
+            skip_reasons={"module_page:b": "no_file_contexts"},
+        )
     )
     with (
         patch(
@@ -332,8 +346,55 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
     async with get_session(session_factory) as session:
         job = await crud.get_generation_job(session, job_id)
         assert job.status == "completed"
+        assert job.total_pages == 2
+        assert job.completed_pages == 1
+        assert job.failed_pages == 0
         cfg = json.loads(job.config_json)
         assert cfg["pages_generated"] == 1
+        assert cfg["skipped_page_ids"] == ["module_page:b"]
+        assert cfg["skip_reasons"] == {"module_page:b": "no_file_contexts"}
+
+
+@pytest.mark.asyncio
+async def test_scoped_generation_preserves_runtime_checkpoint_outcomes(
+    session_factory, tmp_path
+) -> None:
+    """The scoped boundary preserves a real onboarding gate's specific reason."""
+    from repowise.core.generation.models import GenerationConfig
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import RepoStructure
+    from repowise.core.pipeline.scoped_generation import execute_scoped_generation
+    from repowise.core.providers.llm.mock import MockProvider
+
+    async with get_session(session_factory) as session:
+        repo = await crud.upsert_repository(session, name="test", local_path=str(tmp_path))
+        repo_id = repo.id
+    builder = GraphBuilder()
+    builder.build([])
+    rehydrated = _fake_rehydrated([])
+    rehydrated.graph_builder = builder
+    rehydrated.repo_structure = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={},
+        total_files=0,
+        total_loc=0,
+        entry_points=[],
+    )
+    result = await execute_scoped_generation(
+        session_factory=session_factory,
+        repo_id=repo_id,
+        repo_path=tmp_path,
+        rehydrated=rehydrated,
+        plan=SimpleNamespace(generate_ids={"onboarding:onboarding/glossary"}, stale_ids=set()),
+        provider=MockProvider(),
+        generation_config=GenerationConfig(),
+    )
+    assert result.generated_pages == []
+    assert result.completed_page_ids == ()
+    assert result.failed_page_ids == ()
+    assert result.skipped_page_ids == ("onboarding:onboarding/glossary",)
+    assert result.skip_reasons == {"onboarding:onboarding/glossary": "runtime_gate"}
 
 
 def test_resolve_generate_scope_ranked_uses_build_ranked_seed() -> None:

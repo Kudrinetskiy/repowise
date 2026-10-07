@@ -54,6 +54,7 @@ class _RecordingJobSystem:
     def __init__(self) -> None:
         self.completed: list[str] = []
         self.failed: list[tuple[str, str]] = []
+        self.skipped: list[tuple[str, str]] = []
         self.levels: list[int] = []
         self.flushes = 0
 
@@ -68,6 +69,9 @@ class _RecordingJobSystem:
 
     def fail_page(self, job_id, page_id, error):
         self.failed.append((page_id, error))
+
+    def skip_page(self, job_id, page_id, reason):
+        self.skipped.append((page_id, reason))
 
 
 def _run_level() -> tuple[list[GeneratedPage], _RecordingJobSystem, _RecordingStore]:
@@ -159,3 +163,27 @@ def test_the_streaming_sink_receives_the_sanitized_page() -> None:
     asyncio.run(_go())
 
     assert seen == ["# module_page:p\n\nbody"]
+
+
+def test_none_result_is_recorded_as_runtime_skip() -> None:
+    jobs = _RecordingJobSystem()
+
+    async def _go():
+        async def gated():
+            return None
+
+        run = SimpleNamespace(
+            semaphore=asyncio.Semaphore(1),
+            job_system=jobs,
+            job_id="job-1",
+            on_page_done=None,
+            on_page_ready=None,
+            vector_store=None,
+            completed_page_summaries={},
+            timings=None,
+            _record_skip=lambda pid, reason: jobs.skip_page("job-1", pid, reason),
+        )
+        return await _GenerationRun.run_level(run, [("onboarding:glossary", gated())], level=8)
+
+    assert asyncio.run(_go()) == []
+    assert jobs.skipped == [("onboarding:glossary", "runtime_gate")]
