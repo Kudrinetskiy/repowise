@@ -29,7 +29,7 @@ from ..concept_tree.naming import (
     disambiguate_titles,
 )
 from ..models import member_structural_key, scc_page_slug
-from .near_clones import select_clone_representatives
+from ..near_clones import select_clone_representatives
 from .scoring import (
     score_api_contract,
     score_file,
@@ -290,7 +290,9 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(1 for p in parsed_files if _is_file_page_candidate(p) and _passes_importance_floor(p))
+    return sum(
+        1 for p in parsed_files if _is_file_page_candidate(p) and _passes_importance_floor(p)
+    )
 
 
 def _passes_importance_floor(parsed: Any) -> bool:

@@ -20,7 +20,7 @@ from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile
 
-from ..selection.near_clones import select_clone_representatives
+from ..near_clones import select_clone_representatives
 
 _INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})

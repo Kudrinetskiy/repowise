@@ -1,4 +1,4 @@
-"""Near-clone filtering shared by every page-selection caller."""
+"""Near-clone filtering shared without importing selection's public API."""
 
 from __future__ import annotations
 
