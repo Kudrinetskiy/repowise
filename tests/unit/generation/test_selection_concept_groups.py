@@ -125,9 +125,9 @@ def test_root_level_files_get_a_usable_target_path():
     assert any("main.py" in g.file_paths for g in groups)
     for g in groups:
         assert g.key, "a group persisted an empty target_path"
-    assert any(
-        g.key == "root" for g in owning
-    ), f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    assert any(g.key == "root" for g in owning), (
+        f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    )
 
 
 def test_test_files_never_enter_the_concept_tree():
@@ -231,9 +231,9 @@ def test_root_documentation_and_examples_get_no_concept_page():
 
     assert claimed, "fixture produced no groups"
     for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
-        assert not any(
-            p.startswith(prefix) for p in claimed
-        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        assert not any(p.startswith(prefix) for p in claimed), (
+            f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        )
     # The fixture is only meaningful if those files were in the input.
     assert any(p.startswith("docs_src/") for p in _support_paths())
 
@@ -248,9 +248,7 @@ def _with_manifests(inputs: SelectionInputs, *manifests: str) -> SelectionInputs
 def test_a_docs_directory_with_its_own_manifest_is_an_app_and_keeps_its_pages():
     """``docs/package.json`` makes the docs site a built app, part of the subject."""
     app = [f"docs/components/widget{i}.py" for i in range(6)]
-    inputs = _with_manifests(
-        _inputs(paths=_paths() + app + _support_paths()), "docs/package.json"
-    )
+    inputs = _with_manifests(_inputs(paths=_paths() + app + _support_paths()), "docs/package.json")
     claimed = {p for _, g in _build_module_groups(inputs).scored for p in g.file_paths}
 
     assert set(app) <= claimed, f"a docs app was excluded: {set(app) - claimed}"
@@ -333,15 +331,15 @@ def test_ranked_by_summed_pagerank_not_by_path():
     assert len(scored) > 1, "a one-group fixture cannot test ordering"
     # The fixture is only meaningful if path order disagrees with score order,
     # or the assertion below would pass on a sorted-by-path implementation.
-    assert ordered_keys != sorted(
-        ordered_keys
-    ), f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    assert ordered_keys != sorted(ordered_keys), (
+        f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    )
     # ui/c4 carries 1.0 per file against 0.1 elsewhere, so whichever group
     # holds it must come first.
     top_group = scored[0][1]
-    assert any(
-        "/ui/c4/" in p for p in top_group.file_paths
-    ), f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    assert any("/ui/c4/" in p for p in top_group.file_paths), (
+        f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    )
 
 
 def test_display_is_a_name_not_a_bare_path():
@@ -449,9 +447,7 @@ def _leaf(members: list[str]) -> ConceptGroup:
 def _synthesised(leaves: list[ConceptGroup], files: list[str]):
     """The chapters that need a page of their own, as the selector builds them."""
     chapters = _chapter_members(leaves, files)
-    return chapters, _build_rollup_groups(
-        chapters, leaves, files, {f: "python" for f in files}, {}
-    )
+    return chapters, _build_rollup_groups(chapters, leaves, files, {f: "python" for f in files}, {})
 
 
 def test_chapter_emitted_for_parent_of_two_leaf_pages():
@@ -531,12 +527,16 @@ def test_chapter_titles_are_disambiguated_against_the_leaves():
         _module_group("a/web/components", files=(), chapter=True, display=""),
         _module_group("a/ext/components", files=(), chapter=True, display=""),
         _module_group(
-            "a/web/components/x", files=("a/web/components/x/1.py",),
-            chapter=False, display="Components Overview",
+            "a/web/components/x",
+            files=("a/web/components/x/1.py",),
+            chapter=False,
+            display="Components Overview",
         ),
         _module_group(
-            "a/ext/components/y", files=("a/ext/components/y/5.py",),
-            chapter=False, display="Entity Cards",
+            "a/ext/components/y",
+            files=("a/ext/components/y/5.py",),
+            chapter=False,
+            display="Entity Cards",
         ),
     ]
 
@@ -558,12 +558,16 @@ def test_a_chapter_is_named_for_the_directory_it_heads():
     """
     groups = [
         _module_group(
-            "p/ingestion", files=("p/ingestion/loose.py",),
-            chapter=True, display="Pipeline Bootstrap Helpers",
+            "p/ingestion",
+            files=("p/ingestion/loose.py",),
+            chapter=True,
+            display="Pipeline Bootstrap Helpers",
         ),
         _module_group(
-            "p/ingestion/languages", files=("p/ingestion/languages/a.py",),
-            chapter=False, display="Language Catalog",
+            "p/ingestion/languages",
+            files=("p/ingestion/languages/a.py",),
+            chapter=False,
+            display="Language Catalog",
         ),
     ]
 
@@ -579,13 +583,17 @@ def test_a_chapter_skips_container_and_route_segments():
     groups = [
         _module_group("packages/ui/src", files=(), chapter=True, display=""),
         _module_group(
-            "packages/ui/src/zoom", files=("packages/ui/src/zoom/a.ts",),
-            chapter=False, display="Zoom Canvas",
+            "packages/ui/src/zoom",
+            files=("packages/ui/src/zoom/a.ts",),
+            chapter=False,
+            display="Zoom Canvas",
         ),
         _module_group("app/repos/[id]", files=(), chapter=True, display=""),
         _module_group(
-            "app/repos/[id]/docs", files=("app/repos/[id]/docs/p.tsx",),
-            chapter=False, display="Docs Routes",
+            "app/repos/[id]/docs",
+            files=("app/repos/[id]/docs/p.tsx",),
+            chapter=False,
+            display="Docs Routes",
         ),
     ]
 
@@ -604,12 +612,16 @@ def test_a_chapter_spells_its_subject_the_way_the_repository_does():
     groups = [
         _module_group("packages/ui/src", files=(), chapter=True, display=""),
         _module_group(
-            "packages/ui/src/zoom", files=("packages/ui/src/zoom/a.ts",),
-            chapter=False, display="Zoom UI Canvas",
+            "packages/ui/src/zoom",
+            files=("packages/ui/src/zoom/a.ts",),
+            chapter=False,
+            display="Zoom UI Canvas",
         ),
         _module_group(
-            "packages/ui/src/wiki", files=("packages/ui/src/wiki/b.ts",),
-            chapter=False, display="Wiki UI Panels",
+            "packages/ui/src/wiki",
+            files=("packages/ui/src/wiki/b.ts",),
+            chapter=False,
+            display="Wiki UI Panels",
         ),
     ]
 
@@ -625,8 +637,10 @@ def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
     groups = [
         _module_group("p/core", files=(), chapter=True, display=""),
         _module_group(
-            "p/core/a", files=("p/core/a/x.py",),
-            chapter=False, display="Helpers for core and friends",
+            "p/core/a",
+            files=("p/core/a/x.py",),
+            chapter=False,
+            display="Helpers for core and friends",
         ),
     ]
 
@@ -634,7 +648,7 @@ def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
 
 
 def test_a_chapter_does_not_become_a_case_variant_of_a_leaf():
-    """"UI Overview" over "Ui Overview" is one thing written twice.
+    """ "UI Overview" over "Ui Overview" is one thing written twice.
 
     The chapter borrows its casing from its children and the leaf derives its
     own from a path, so the two arrive spelled differently and an exact-match
@@ -643,12 +657,16 @@ def test_a_chapter_does_not_become_a_case_variant_of_a_leaf():
     groups = [
         _module_group("packages/ui/src", files=(), chapter=True, display=""),
         _module_group(
-            "packages/ui/src/overview", files=("packages/ui/src/overview/a.ts",),
-            chapter=False, display="Ui Overview",
+            "packages/ui/src/overview",
+            files=("packages/ui/src/overview/a.ts",),
+            chapter=False,
+            display="Ui Overview",
         ),
         _module_group(
-            "packages/ui/src/zoom", files=("packages/ui/src/zoom/b.ts",),
-            chapter=False, display="Zoom UI Canvas",
+            "packages/ui/src/zoom",
+            files=("packages/ui/src/zoom/b.ts",),
+            chapter=False,
+            display="Zoom UI Canvas",
         ),
     ]
 
@@ -670,9 +688,7 @@ def test_a_chapter_is_named_from_the_children_the_tree_puts_under_it():
         _module_group(
             "p/svc/api/v2", files=("p/svc/api/v2/a.py",), chapter=False, display="V2 API Routes"
         ),
-        _module_group(
-            "p/svc/db", files=("p/svc/db/b.py",), chapter=False, display="Storage Layer"
-        ),
+        _module_group("p/svc/db", files=("p/svc/db/b.py",), chapter=False, display="Storage Layer"),
     ]
 
     out = {g.key: g.display for g in retitle_chapters(groups)}
