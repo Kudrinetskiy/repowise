@@ -1,0 +1,7 @@
+interface:
+  display_name: "Maintain RepoWise"
+  short_description: "Safe RepoWise index and wiki updates"
+  default_prompt: "Use $maintain-repowise to inspect the current setup, choose single-repo or workspace mode from evidence, and apply the correct RepoWise workflow."
+
+policy:
+  allow_implicit_invocation: false
