@@ -199,9 +199,7 @@ async def test_summary_freshness_when_one_side_is_unknown(
     no_git = await crud.upsert_repository(session, name="plain", local_path=str(plain))
     live_only_dir = _git_dir(tmp_path / "live")
     (live_only_dir / ".git" / "HEAD").write_text("b" * 40 + "\n", encoding="utf-8")
-    live_only = await crud.upsert_repository(
-        session, name="live", local_path=str(live_only_dir)
-    )
+    live_only = await crud.upsert_repository(session, name="live", local_path=str(live_only_dir))
     # Registration stamps head_commit from the live HEAD; clear it so no side
     # records what the index reflects.
     live_only.head_commit = None
@@ -303,9 +301,7 @@ async def test_update_repo_unknown_style_message(client: AsyncClient) -> None:
     )
     valid = ", ".join(s.name for s in list_styles())
     assert resp.status_code == 400
-    assert resp.json() == {
-        "detail": f"Unknown wiki_style 'bogus'. Valid styles: {valid}."
-    }
+    assert resp.json() == {"detail": f"Unknown wiki_style 'bogus'. Valid styles: {valid}."}
 
 
 @pytest.mark.asyncio
@@ -463,9 +459,7 @@ def _body(**selection) -> repos_module.GenerateRequestBody:
 )
 def test_generate_selection_rejections(selection: dict, detail: str) -> None:
     with pytest.raises(HTTPException) as exc:
-        repos_module._validate_generate_selection(
-            repos_module.GenerateSelectionBody(**selection)
-        )
+        repos_module._validate_generate_selection(repos_module.GenerateSelectionBody(**selection))
     assert exc.value.status_code == 400
     assert exc.value.detail == detail
 
@@ -547,6 +541,7 @@ async def test_estimate_prices_the_resolved_scope(client: AsyncClient) -> None:
         ],
         stale_ids=["a", "b"],
         unknown_page_ids=("zzz",),
+        retired_page_ids=("module_page:obsolete",),
     )
     with (
         patch(
@@ -571,6 +566,7 @@ async def test_estimate_prices_the_resolved_scope(client: AsyncClient) -> None:
         "pages_by_type": {"module_page": 3, "repo_overview": 1},
         "pages_to_mark_stale": 2,
         "unknown_page_ids": ["zzz"],
+        "retired_page_ids": ["module_page:obsolete"],
         "provider": {"name": "mock", "model": "claude-sonnet-4-6", "error": None},
         "estimate": {
             "estimated_cost_usd": 1.2346,
@@ -587,7 +583,7 @@ async def test_estimate_prices_the_resolved_scope(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_estimate_without_cost_plans_has_no_estimate(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
-    plan = SimpleNamespace(cost_plans=[], stale_ids=[], unknown_page_ids=[])
+    plan = SimpleNamespace(cost_plans=[], stale_ids=[], unknown_page_ids=[], retired_page_ids=[])
     with (
         patch(
             "repowise.server.provider_config.get_chat_provider_instance",
@@ -603,6 +599,7 @@ async def test_estimate_without_cost_plans_has_no_estimate(client: AsyncClient) 
 
     assert resp.json()["estimate"] is None
     assert resp.json()["total_pages"] == 0
+    assert resp.json()["retired_page_ids"] == []
     assert "note" not in resp.json()
 
 
@@ -627,6 +624,7 @@ async def test_estimate_reports_rehydrate_failure_as_a_note(client: AsyncClient)
         "pages_by_type": {},
         "pages_to_mark_stale": 0,
         "unknown_page_ids": [],
+        "retired_page_ids": [],
         "provider": {"name": "mock", "model": "claude-sonnet-4-6", "error": None},
         "estimate": None,
         "note": "no persisted graph",
@@ -832,9 +830,7 @@ async def test_file_content_indexed_by_health_metrics_only(
         session.add(HealthFileMetric(repository_id=repo["id"], file_path="m.py"))
         session.add(HealthFileMetric(repository_id=repo["id"], file_path="gone.py"))
 
-    ok = await client.get(
-        f"/api/repos/{repo['id']}/file-content", params={"file_path": "m.py"}
-    )
+    ok = await client.get(f"/api/repos/{repo['id']}/file-content", params={"file_path": "m.py"})
     assert ok.status_code == 200
     assert ok.text == "y = 2\n"
 
@@ -859,9 +855,7 @@ async def test_file_content_read_error_is_500(
         raise OSError("access denied")
 
     monkeypatch.setattr(Path, "read_text", denied)
-    resp = await client.get(
-        f"/api/repos/{repo['id']}/file-content", params={"file_path": "m.py"}
-    )
+    resp = await client.get(f"/api/repos/{repo['id']}/file-content", params={"file_path": "m.py"})
     monkeypatch.undo()
     assert resp.status_code == 500
     assert resp.json() == {"detail": "access denied"}
