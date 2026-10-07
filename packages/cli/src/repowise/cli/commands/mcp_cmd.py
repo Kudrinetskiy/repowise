@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import click
@@ -168,6 +169,16 @@ def mcp_command(
         repowise mcp --no-workspace      # force single-repo mode
         repowise mcp --transport streamable-http  # HTTP on port 7338
     """
+    if transport == "stdio":
+        # Keep every logging level off the protocol stream, including events
+        # emitted while loading configuration or importing the server.
+        import structlog
+
+        structlog.configure(
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+            cache_logger_on_first_use=False,
+        )
+
     if path is None:
         repo_path = find_repowise_repo_root(Path.cwd()) or resolve_repo_path(None)
     else:
