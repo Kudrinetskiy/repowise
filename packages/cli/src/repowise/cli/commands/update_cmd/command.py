@@ -814,6 +814,9 @@ def run_update(
 
     load_dotenv(repo_path)
     state = load_state(repo_path)
+    # Keep the caller's opt-out separate from the effective mode: a normal
+    # deterministic update also uses the index-only path, but refreshes its docs.
+    explicit_docs_opt_out = index_only or docs_flag is False
     resolved_index_only = _resolve_index_only_mode(
         index_only=index_only, docs_flag=docs_flag, state=state
     )
@@ -1692,7 +1695,13 @@ def run_update(
                     raise
                 persistence_ok = False
                 degraded.append(f"Template page persistence: {exc}")
-            if persistence_ok and det_pages and not unresolved_paths and head:
+            if (
+                persistence_ok
+                and det_pages
+                and not unresolved_paths
+                and head
+                and not explicit_docs_opt_out
+            ):
                 state["last_docs_commit"] = head
             if persistence_ok and det_pages:
                 console.print(

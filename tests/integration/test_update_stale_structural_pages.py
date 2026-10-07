@@ -223,6 +223,111 @@ def test_stale_only_update_repairs_sql_and_fts_without_model_provider(
     assert not (repo / ".vscode").exists()
 
 
+@pytest.mark.parametrize(
+    ("docs_mode", "mode_flags", "preserve_docs_pointer"),
+    [
+        pytest.param("llm", ["--index-only"], True, id="llm-index-only"),
+        pytest.param("llm", ["--no-docs"], True, id="llm-no-docs"),
+        pytest.param("deterministic", ["--index-only"], True, id="deterministic-index-only"),
+        pytest.param("deterministic", [], False, id="normal-deterministic"),
+    ],
+)
+def test_structural_refresh_respects_explicit_docs_pointer_opt_out(
+    tmp_path: Path, monkeypatch, docs_mode: str, mode_flags: list[str], preserve_docs_pointer: bool
+) -> None:
+    repo = _init_repo(tmp_path)
+    _stabilize_fixture(repo)
+    if docs_mode == "llm":
+        _set_llm_docs_mode(repo)
+    page_id = _mark_file_page_stale(repo)
+    state_path = repo / ".repowise" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    old_docs_commit = state["last_sync_commit"]
+    _git(
+        repo,
+        "-c",
+        "user.name=RepoWise Test",
+        "-c",
+        "user.email=repowise-test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "new head",
+    )
+    head = _run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    assert head != old_docs_commit
+    state.update(
+        last_sync_commit=head,
+        last_docs_commit=old_docs_commit,
+        renderer_fingerprint="previous-release-renderer",
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as database:
+        database.row_factory = sqlite3.Row
+        prose = dict(
+            database.execute("SELECT * FROM wiki_pages WHERE id = ?", (page_id,)).fetchone()
+        )
+        prose.update(
+            id="module_page:preserved-prose",
+            page_type="module_page",
+            target_path="",
+            content="Existing conceptual prose must survive an index refresh.",
+            summary="Existing conceptual summary",
+            digest="Existing conceptual digest",
+            provider_name="mock",
+            model_name="original-prose-model",
+            metadata_json="{}",
+            freshness_status="fresh",
+        )
+        columns = ", ".join(prose)
+        placeholders = ", ".join("?" for _ in prose)
+        database.execute(
+            f"INSERT INTO wiki_pages ({columns}) VALUES ({placeholders})", list(prose.values())
+        )
+
+    def fail_provider(*_args, **_kwargs):
+        raise AssertionError("structural-only refresh must not resolve a model provider")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", fail_provider
+    )
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(
+        "repowise.core.analysis.communities._suppress_graspologic_output", nullcontext
+    )
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    result = CliRunner().invoke(
+        cli,
+        ["update", str(repo), "--no-workspace", "--no-agents", *mode_flags],
+        catch_exceptions=True,
+    )
+    assert result.exit_code == 0, result.output
+    assert _stale_file_pages(repo) == 0
+    page_content, fts_content = _page_and_fts_content(repo, page_id)
+    assert STALE_SENTINEL not in page_content
+    assert STALE_SENTINEL not in fts_content
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as database:
+        database.row_factory = sqlite3.Row
+        preserved = dict(
+            database.execute("SELECT * FROM wiki_pages WHERE id = ?", (prose["id"],)).fetchone()
+        )
+        # Hierarchy numbering may reconcile independently of prose generation.
+        for field in (
+            "content",
+            "summary",
+            "digest",
+            "metadata_json",
+            "provider_name",
+            "model_name",
+        ):
+            assert preserved[field] == prose[field]
+    updated = json.loads(state_path.read_text(encoding="utf-8"))
+    assert updated["last_sync_commit"] == head
+    assert updated["renderer_fingerprint"] != "previous-release-renderer"
+    assert updated["last_docs_commit"] == (old_docs_commit if preserve_docs_pointer else head)
+
+
 def test_stale_page_is_refreshed_after_file_loses_all_symbols(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     _stabilize_fixture(repo)
