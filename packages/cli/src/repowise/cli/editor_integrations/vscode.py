@@ -47,12 +47,12 @@ class VSCodeSetup:
         # A refresh keeps a wired workspace current; it never creates one. An
         # init that skipped editor setup would otherwise get .vscode files
         # from its first update.
-        if not vscode_target.detect(repo_path):
-            return
-        _write_vscode_files(console_obj, repo_path)
+        _write_vscode_files(console_obj, repo_path, existing_only=True)
 
 
-def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
+def _write_vscode_files(
+    console_obj: Any, repo_path: Path, *, existing_only: bool = False
+) -> list[Path]:
     """Write or merge the managed .vscode files, skipping any JSONC file safely.
 
     Returns the paths actually written. A file we declined to touch is not in
@@ -68,9 +68,10 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
 
     written: list[Path] = []
     try:
-        mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code MCP configured ({mcp_path})")
-        written.append(Path(mcp_path))
+        if not existing_only or (repo_path / ".vscode" / "mcp.json").exists():
+            mcp_path = save_vscode_mcp_config(repo_path)
+            console_obj.print(f"  [{OK}]✓[/] VS Code MCP configured ({mcp_path})")
+            written.append(Path(mcp_path))
     except ValueError:
         console_obj.print(
             f"  [{WARN}].vscode/mcp.json left unchanged (not valid JSON; it may contain "
@@ -78,9 +79,10 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
         )
 
     try:
-        ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code extension recommended ({ext_path})")
-        written.append(Path(ext_path))
+        if not existing_only or (repo_path / ".vscode" / "extensions.json").exists():
+            ext_path = save_vscode_extensions_config(repo_path)
+            console_obj.print(f"  [{OK}]✓[/] VS Code extension recommended ({ext_path})")
+            written.append(Path(ext_path))
     except ValueError:
         console_obj.print(
             f"  [{WARN}].vscode/extensions.json left unchanged (not valid JSON; it may "
