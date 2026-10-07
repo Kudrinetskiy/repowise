@@ -4,8 +4,8 @@
 page in the new voice. It reuses the persisted graph (rehydrated from SQL) and the
 persisted git metadata (no re-blame) — the only unavoidable rework is re-parsing
 files for ASTs, exactly like ``repowise update --full``. Because the chosen style
-folds into each page's ``source_hash``, the regeneration is unconditional: every
-page is rewritten in the new style.
+folds into each page's ``source_hash``, old-style pages are invalidated; pages
+saved by an interrupted identical command can be reused on the next run.
 
 ``wiki-styles`` lists the available styles and shows which one a repo currently uses.
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
@@ -32,7 +33,13 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.ui import load_dotenv
+from repowise.cli.ui import (
+    BRAND_STYLE,
+    OWL_SPINNER,
+    MaybeCountColumn,
+    RichProgressCallback,
+    load_dotenv,
+)
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
@@ -61,16 +68,23 @@ async def _run_restyle(
     config: Any,
     *,
     exclude_patterns: list[str],
-) -> list[Any]:
+    progress: Any | None = None,
+) -> tuple[list[Any], int, int]:
     """Regenerate every wiki page in the configured style, reusing the index.
 
     Mirrors the upgrade flow's regeneration step but loads git metadata from the
     DB instead of re-blaming, and skips the health recompute — a style change
     affects prose only, never the graph, git signals, or health scores.
     """
+    from repowise.cli.commands.init_cmd._generation_persist import run_generation_with_persistence
     from repowise.cli.commands.upgrade_flow import _reparse
     from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.cli.providers import build_cost_tracker, cost_tracking_disabled
+    from repowise.cli.providers import (
+        build_embedder,
+        build_vector_store,
+        cost_tracking_disabled,
+        resolve_embedder_for_repo,
+    )
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
         FullTextSearch,
@@ -78,10 +92,11 @@ async def _run_restyle(
         create_session_factory,
         get_session,
         init_db,
+        list_pages,
         upsert_pages_from_generated,
         upsert_repository,
     )
-    from repowise.core.pipeline import rehydrate_graph_builder, run_generation
+    from repowise.core.pipeline import rehydrate_graph_builder
     from repowise.core.pipeline.resume.rehydrate import rehydrate_git_meta_map
 
     url = get_db_url_for_repo(repo_path)
@@ -103,23 +118,34 @@ async def _run_restyle(
         f"Re-parsed [cyan]{len(parsed_files)}[/cyan] files (graph + git reused from index)."
     )
 
-    cost_tracker = CostTracker() if cost_tracking_disabled() else build_cost_tracker(sf, repo_id)
+    # Construct directly inside this event loop; the sync factory uses
+    # asyncio.run(). Buffer cost writes until the page writer has drained.
+    cost_tracker = (
+        CostTracker()
+        if cost_tracking_disabled()
+        else CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
+    )
     provider._cost_tracker = cost_tracker
 
-    # No prior_pages are passed: the style change would invalidate them all anyway,
-    # and omitting them makes the full-repo rewrite explicit.
-    generated_pages = await run_generation(
+    embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
+    vector_store = build_vector_store(repo_path, embedder)
+
+    # Prompt hashes invalidate the old style while retaining completed pages
+    # from an interrupted identical run.
+    generated_pages = await run_generation_with_persistence(
         repo_path=repo_path,
+        repo_name=repo_path.name,
+        reuse_prior_pages=True,
         parsed_files=parsed_files,
         source_map=source_map,
         graph_builder=graph_builder,
         repo_structure=repo_structure,
         git_meta_map=git_meta_map,
         llm_client=provider,
-        embedder=None,
-        vector_store=None,
+        embedder=embedder,
+        vector_store=vector_store,
         concurrency=config.max_concurrency,
-        progress=None,
+        progress=progress,
         cost_tracker=cost_tracker,
         generation_config=config,
     )
@@ -127,16 +153,25 @@ async def _run_restyle(
 
     async with get_session(sf) as session:
         await upsert_pages_from_generated(session, generated_pages, repo_id)
+        persisted_pages = await list_pages(session, repo_id, limit=100_000)
+        total_tokens = sum(
+            (page.input_tokens or 0) + (page.output_tokens or 0) for page in persisted_pages
+        )
 
     try:
         fts = FullTextSearch(engine)
         await fts.ensure_index()
-        await fts.index_pages(generated_pages)
+        await fts.index_many(
+            [
+                (page.id, page.title, page.content, page.summary, page.target_path, page.digest)
+                for page in persisted_pages
+            ]
+        )
     except Exception:
         pass  # FTS indexing is best-effort
 
     await engine.dispose()
-    return generated_pages
+    return generated_pages, len(persisted_pages), total_tokens
 
 
 @click.command("restyle")
@@ -233,11 +268,12 @@ def restyle_command(
 
     from repowise.core.generation import GenerationConfig
 
+    resolved_reasoning = resolve_reasoning(reasoning, cfg)
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
-        reasoning=resolve_reasoning(reasoning, cfg),
+        reasoning=resolved_reasoning,
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=style,
     )
@@ -245,24 +281,52 @@ def restyle_command(
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 
     start = time.monotonic()
-    generated_pages = run_async(
-        _run_restyle(repo_path, provider, config, exclude_patterns=exclude_patterns)
+    console.print(
+        "[dim](each generated page is saved as it completes — safe to Ctrl-C; "
+        "rerun the same command to resume)[/dim]"
     )
+    columns: list[Any] = [
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+    ]
+    with Progress(*columns, console=console) as gen_progress:
+        gen_callback = RichProgressCallback(gen_progress, console)
+        generated_pages, total_pages, total_tokens = run_async(
+            _run_restyle(
+                repo_path,
+                provider,
+                config,
+                exclude_patterns=exclude_patterns,
+                progress=gen_callback,
+            )
+        )
 
     # Persist the new style. The default is removed (not written) to keep config
     # tidy. Recompute the config fingerprint AFTER the write so the next
     # `repowise update` doesn't see a config change and divert to a health rescore.
     if style == DEFAULT_STYLE:
         _remove_config_key(repo_path, "wiki_style")
-    else:
-        save_config_partial(repo_path, wiki_style=style)
+    save_config_partial(
+        repo_path,
+        wiki_style=style if style != DEFAULT_STYLE else None,
+        provider=provider.provider_name,
+        model=provider.model_name,
+        reasoning=resolved_reasoning,
+    )
 
     head = get_head_commit(repo_path)
     state["last_sync_commit"] = head
     # A restyle rewrites every page with a model, so a template wiki stops
     # being one here. Without this, `update` keeps defaulting to index-only.
     state.update(docs_mode_state_fields("llm"))
-    state["total_pages"] = len(generated_pages)
+    state["total_pages"] = total_pages
+    state["provider"] = provider.provider_name
+    state["model"] = provider.model_name
+    state["reasoning"] = resolved_reasoning
+    state["total_tokens"] = total_tokens
     state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)
 
