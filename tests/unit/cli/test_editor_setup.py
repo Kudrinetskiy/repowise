@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from io import StringIO
@@ -657,7 +658,11 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
     ]
 
 
-def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) -> None:
+def test_refresh_editor_project_files_delegates_to_integrations(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
     calls: list[tuple[str, Path, frozenset[str]]] = []
 
     class FakeIntegration:
@@ -681,6 +686,76 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     )
 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
+
+
+@pytest.mark.parametrize("skip_value", ["1", " true ", "off", None, "", "0", " false ", "NO"])
+def test_refresh_editor_project_files_respects_env_optout_on_disk(
+    tmp_path: Path,
+    monkeypatch: Any,
+    skip_value: str | None,
+) -> None:
+    """A per-run opt-out preserves editor bytes; explicit off values refresh."""
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+    from repowise.core.persistence.models import Repository
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / '.repowise' / 'wiki.db'}"
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+    async def seed_index() -> None:
+        engine = create_engine(db_url)
+        try:
+            await init_db(engine)
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(
+                    Repository(
+                        name="protected-editor-repo",
+                        local_path=str(tmp_path),
+                        head_commit="a" * 40,
+                    )
+                )
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(seed_index())
+    originals = {
+        ".claude/CLAUDE.md": b"User-maintained instructions\n",
+        ".vscode/mcp.json": b'{"servers": {"user-server": {"command": "user-tool"}}}\n',
+        ".vscode/extensions.json": b'{"recommendations": ["user.extension"]}\n',
+    }
+    for relative_path, content in originals.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    if skip_value is None:
+        monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    else:
+        monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", skip_value)
+
+    refresh_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(ClaudeCodeSetup(), VSCodeSetup()),
+    )
+
+    if skip_value in ("1", " true ", "off"):
+        for relative_path, content in originals.items():
+            assert (tmp_path / relative_path).read_bytes() == content
+    else:
+        assert "protected-editor-repo" in (tmp_path / ".claude/CLAUDE.md").read_text()
+        assert "User-maintained instructions" in (tmp_path / ".claude/CLAUDE.md").read_text()
+        mcp = json.loads((tmp_path / ".vscode/mcp.json").read_text())
+        assert mcp["servers"]["user-server"] == {"command": "user-tool"}
+        assert "repowise" in mcp["servers"]
+        extensions = json.loads((tmp_path / ".vscode/extensions.json").read_text())
+        assert "user.extension" in extensions["recommendations"]
+        assert "repowise-dev.repowise" in extensions["recommendations"]
 
 
 def test_write_editor_project_files_honors_vscode_config_optout(
@@ -711,8 +786,12 @@ def test_write_editor_project_files_honors_vscode_config_optout(
     assert not (tmp_path / ".vscode").exists()
 
 
-def test_refresh_editor_project_files_honors_vscode_config_optout(tmp_path: Path) -> None:
+def test_refresh_editor_project_files_honors_vscode_config_optout(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
     """The update refresh path applies the same explicit opt-out."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
     repowise_dir = tmp_path / ".repowise"
     repowise_dir.mkdir()
     (repowise_dir / "config.yaml").write_text(
