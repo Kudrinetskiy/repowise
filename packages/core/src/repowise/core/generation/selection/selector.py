@@ -217,6 +217,15 @@ def _is_code_file(parsed: Any) -> bool:
     return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
 
 
+def _is_document_file(parsed: Any) -> bool:
+    fi = parsed.file_info
+    return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language == "markdown"
+
+
+def _is_file_page_candidate(parsed: Any) -> bool:
+    return _is_code_file(parsed) or _is_document_file(parsed)
+
+
 # ---------------------------------------------------------------------------
 # File-page volume policy
 #
@@ -281,7 +290,7 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
+    return sum(1 for p in parsed_files if _is_file_page_candidate(p) and _passes_importance_floor(p))
 
 
 def _passes_importance_floor(parsed: Any) -> bool:
@@ -323,21 +332,24 @@ def _build_file_candidates(
 
     scored: list[tuple[float, str]] = []
     for p in inputs.parsed_files:
-        if not _is_code_file(p):
+        if not _is_file_page_candidate(p):
             continue
         if not _passes_importance_floor(p):
             continue
         path = p.file_info.path
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
-        s = score_file(
-            p,
-            pagerank=inputs.pagerank.get(path, 0.0),
-            betweenness=inputs.betweenness.get(path, 0.0),
-            max_pagerank=max_pr,
-            max_betweenness=max_bet,
-            is_hotspot=is_hotspot,
-            kg_bonus=kg_scores.get(path, 0.0),
-        )
+        if _is_document_file(p):
+            s = 0.01 + min(max(p.file_info.size_bytes, 0), 100_000) / 100_000
+        else:
+            s = score_file(
+                p,
+                pagerank=inputs.pagerank.get(path, 0.0),
+                betweenness=inputs.betweenness.get(path, 0.0),
+                max_pagerank=max_pr,
+                max_betweenness=max_bet,
+                is_hotspot=is_hotspot,
+                kg_bonus=kg_scores.get(path, 0.0),
+            )
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))

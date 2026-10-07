@@ -297,14 +297,24 @@ class _GenerationRun:
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
+        explicit_file_paths = {
+            p.file_info.path
+            for p in self.parsed_files
+            if self.only_page_ids is not None
+            and compute_page_id("file_page", p.file_info.path) in self.only_page_ids
+        }
         if getattr(self.config, "dedupe_near_clones", True):
             drop_paths = _select_clone_representatives(code_files, self.pagerank)
             if drop_paths:
                 log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
                 code_files = [p for p in code_files if p.file_info.path not in drop_paths]
-                parsed_files_for_selection = [
-                    p for p in self.parsed_files if p.file_info.path not in drop_paths
-                ]
+                # The shared selector owns deduplication for both planning and
+                # generation. Scoped repair still needs the requested context.
+                code_files.extend(
+                    p
+                    for p in self.parsed_files
+                    if p.file_info.path in drop_paths & explicit_file_paths
+                )
 
         try:
             community_info_map = self.graph_builder.community_info() or {}
@@ -337,6 +347,15 @@ class _GenerationRun:
 
         self.selection = selection
         self.sel_file_paths = set(selection.file_page_paths)
+        self.sel_file_paths.update(explicit_file_paths)
+        code_files.extend(
+            p
+            for p in self.parsed_files
+            if p.file_info.language == "markdown"
+            and p.file_info.path in self.sel_file_paths
+            and not p.file_info.is_api_contract
+            and not _is_infra_file(p)
+        )
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)
         self.sel_module_groups = list(selection.module_groups)
