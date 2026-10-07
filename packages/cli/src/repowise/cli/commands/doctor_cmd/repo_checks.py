@@ -61,7 +61,6 @@ def _is_stub_fallback_row(page) -> bool:
     return isinstance(meta, dict) and STUB_FALLBACK_ERROR in meta
 
 
-
 async def _page_count(session: object, repo_id: str) -> int:
     """Count this repository's pages in SQL.
 
@@ -141,9 +140,10 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     8900 of them. ``--repair`` deletes what this reports, so what it removed
     was the live index.
 
-    Four columns rather than whole rows: the id to match against the stores,
+    Only the columns needed rather than whole rows: the id to match against the stores,
     the content and digest for the information floor, metadata_json for the stub
-    predicate, and target_path to tell whether the file is excluded. Nothing downstream reads any other field, and hydrating full
+    predicate, target_path to tell whether the file is excluded, and freshness_status
+    to keep tombstones out of FTS. Nothing downstream reads any other field, and hydrating full
     ORM objects for every page only to discard them is what made a cap look
     necessary in the first place.
     """
@@ -152,9 +152,14 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     from repowise.core.persistence.models import Page
 
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.id, Page.content, Page.digest, Page.metadata_json, Page.target_path).where(
-            Page.repository_id == repo_id
-        )
+        select(
+            Page.id,
+            Page.content,
+            Page.digest,
+            Page.metadata_json,
+            Page.target_path,
+            Page.freshness_status,
+        ).where(Page.repository_id == repo_id)
     )
     return list(result.all())
 
@@ -512,9 +517,7 @@ def _run_repo_checks(
                         p.id
                         for p in pages
                         if meets_information_floor(p.content or "", digest=p.digest or "")
-                        and not is_excluded(
-                            (p.target_path or "").split("::", 1)[0], exclude_spec
-                        )
+                        and not is_excluded((p.target_path or "").split("::", 1)[0], exclude_spec)
                     }
                     # A stub standing in for a failed model page is held out of
                     # the vector store on purpose: ``_seed_resume`` reads the
@@ -529,6 +532,14 @@ def _run_repo_checks(
                     # that has since become a stub is real drift worth deleting.
                     stub_ids = {p.id for p in pages if _is_stub_fallback_row(p)}
                     vector_indexable_ids = indexable_ids - stub_ids
+                    # Tombstones retain SQL content but are intentionally
+                    # removed from FTS. Their absence is not missing drift;
+                    # a lingering FTS entry is an orphan that repair can drop.
+                    # Keep vector semantics and the other missing-only
+                    # exclusions unchanged.
+                    tombstone_ids = {p.id for p in pages if p.freshness_status == "tombstone"}
+                    fts_indexable_ids = indexable_ids - tombstone_ids
+                    fts_sql_ids = sql_ids - tombstone_ids
 
                 # Check vector store
                 vs_ids: set[str] = set()
@@ -547,7 +558,9 @@ def _run_repo_checks(
                             store_open_fix_hint,
                         )
 
-                        vs_error = f"{type(exc).__name__}: {exc}; to fix: {store_open_fix_hint(exc)}"
+                        vs_error = (
+                            f"{type(exc).__name__}: {exc}; to fix: {store_open_fix_hint(exc)}"
+                        )
 
                 # An index on disk that holds none of the indexable pages is
                 # every one of them missing. Only no index at all (fast mode,
@@ -561,8 +574,8 @@ def _run_repo_checks(
                     fts_ids = await fts.list_indexed_ids()
                 except Exception:
                     fts_ids = set()
-                m_fts = indexable_ids - fts_ids if fts_ids else set()
-                o_fts = fts_ids - sql_ids if fts_ids else set()
+                m_fts = fts_indexable_ids - fts_ids if fts_ids else set()
+                o_fts = fts_ids - fts_sql_ids if fts_ids else set()
 
                 await engine.dispose()
                 empty = lance_dir.exists() and vs_error is None and not vs_ids
@@ -807,9 +820,7 @@ def _run_repo_checks(
                     # only command that could fix the drift was the one the
                     # drift killed. Both repairs below work on either column
                     # set, so say what failed and carry on.
-                    console.print(
-                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]")
                 # Orphans first, deliberately. Deleting one needs nothing but
                 # its page_id, so it works on any column set this class has
                 # ever written — including the one an upgrade just failed to
@@ -954,8 +965,7 @@ def _run_repo_checks(
     elif repair and not has_mismatches and not registration_wedged and not agents_need_refresh:
         if stale_count:
             console.print(
-                f"[yellow]No store drift to repair. "
-                f"{_stale_page_guidance(stale_counts)}[/yellow]"
+                f"[yellow]No store drift to repair. {_stale_page_guidance(stale_counts)}[/yellow]"
             )
         else:
             console.print("[green]Nothing to repair.[/green]")

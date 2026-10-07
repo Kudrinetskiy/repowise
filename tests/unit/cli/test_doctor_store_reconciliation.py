@@ -17,13 +17,21 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from repowise.cli.commands.doctor_cmd import repo_checks
 
 PAGE_IN_BOTH = "file_page:kept.py"
 PAGE_MISSING = "file_page:dropped.py"
 
 
-async def _build_repo(tmp_path: Path) -> Path:
+async def _build_repo(
+    tmp_path: Path,
+    *,
+    second_freshness: str = "fresh",
+    index_second_in_fts: bool = False,
+    index_second_in_vector: bool = False,
+) -> Path:
     """A repo whose database holds two pages and whose store holds one."""
     import git as gitpython
 
@@ -53,7 +61,10 @@ async def _build_repo(tmp_path: Path) -> Path:
         repo = await upsert_repository(
             session, name="repo", local_path=str(repo_path), url="https://example.test/repo"
         )
-        for page_id, path in ((PAGE_IN_BOTH, "kept.py"), (PAGE_MISSING, "dropped.py")):
+        for page_id, path, freshness in (
+            (PAGE_IN_BOTH, "kept.py", "fresh"),
+            (PAGE_MISSING, "dropped.py", second_freshness),
+        ):
             await upsert_page(
                 session,
                 page_id=page_id,
@@ -66,16 +77,23 @@ async def _build_repo(tmp_path: Path) -> Path:
                 source_hash="",
                 model_name="mock",
                 provider_name="mock",
+                freshness_status=freshness,
             )
         await session.commit()
 
     fts = FullTextSearch(engine)
     await fts.ensure_index()
     await fts.index(PAGE_IN_BOTH, "File: kept.py", "Body.", summary="", target_path="kept.py")
+    if index_second_in_fts:
+        await fts.index(
+            PAGE_MISSING, "File: dropped.py", "Body.", summary="", target_path="dropped.py"
+        )
     await engine.dispose()
 
     store = LanceDBVectorStore(str(repowise_dir / "lancedb"), embedder=MockEmbedder())
     await store.embed_and_upsert(PAGE_IN_BOTH, "Body.", {"title": "File: kept.py"})
+    if index_second_in_vector:
+        await store.embed_and_upsert(PAGE_MISSING, "Body.", {"title": "File: dropped.py"})
     await store.close()
 
     return repo_path
@@ -103,6 +121,31 @@ def test_the_full_text_drift_row_is_reported(tmp_path: Path) -> None:
     ok, detail = rows["SQL ↔ FTS Index"]
     assert ok is False
     assert detail == "1 missing, 0 orphaned"
+
+
+@pytest.mark.parametrize(
+    ("index_tombstone", "expected_fts"),
+    [
+        pytest.param(False, (True, "in sync"), id="intentional-absence"),
+        pytest.param(True, (False, "0 missing, 1 orphaned"), id="lingering-entry"),
+    ],
+)
+def test_tombstones_are_not_expected_in_fts(
+    tmp_path: Path, index_tombstone: bool, expected_fts: tuple[bool, str]
+) -> None:
+    repo_path = asyncio.run(
+        _build_repo(
+            tmp_path,
+            second_freshness="tombstone",
+            index_second_in_fts=index_tombstone,
+            index_second_in_vector=True,
+        )
+    )
+
+    rows = _rows(repo_path)
+
+    assert rows["SQL ↔ FTS Index"] == expected_fts
+    assert rows["SQL ↔ Vector Store"] == (True, "in sync")
 
 
 def test_a_failed_reconciliation_no_longer_passes_as_a_bare_note(tmp_path: Path) -> None:
@@ -180,7 +223,9 @@ def test_an_empty_vector_store_is_not_in_sync(tmp_path: Path) -> None:
     assert detail == "2 missing, 0 orphaned"
 
 
-def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path, monkeypatch) -> None:
+def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(
+    tmp_path: Path, monkeypatch
+) -> None:
     """An empty store is a whole reindex; doctor points there instead of spending."""
     import shutil
 
@@ -204,12 +249,8 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
         embedded.append(page_id)
 
     monkeypatch.setattr(LanceDBVectorStore, "embed_and_upsert", _record)
-    monkeypatch.setattr(
-        "repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "openai"
-    )
-    monkeypatch.setattr(
-        "repowise.cli.providers.build_embedder", lambda _n, _p=None: MockEmbedder()
-    )
+    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "openai")
+    monkeypatch.setattr("repowise.cli.providers.build_embedder", lambda _n, _p=None: MockEmbedder())
     printed: list[str] = []
     monkeypatch.setattr(
         repo_checks.console, "print", lambda *a, **k: printed.append(" ".join(map(str, a)))
