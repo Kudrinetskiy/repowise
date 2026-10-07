@@ -2266,7 +2266,9 @@ async def persist_incremental_index(
                 record_cleanup_debt(Path(repo_path), "fts", fts_cleanup_ids)
                 _skip("Tombstone full-text removal", exc, range_scoped=True)
 
-        vector_cleanup_ids = set(tombstoned_page_ids) | cleanup_debt["vectors"]
+        vector_cleanup_ids = (
+            set(tombstoned_page_ids) | set(swept_page_ids) | cleanup_debt["vectors"]
+        )
         if vector_cleanup_ids and vector_store is None:
             lance_dir = Path(repo_path) / ".repowise" / "lancedb"
             if lance_dir.exists():
@@ -2294,14 +2296,9 @@ async def persist_incremental_index(
                 record_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
                 _skip("Tombstone vector removal", exc)
 
-        # Ceiling: retired non-file pages' *vector* embeddings survive this path.
-        # There is no store here to delete them from, and building one would
-        # pull the lancedb import onto the post-commit hook, which
-        # ``deterministic.py`` avoids on purpose — and with the default mock
-        # embedder this path never wrote a page embedding in the first place.
-        # LanceDB hydrates a hit from its own columns, so a residual embedding
-        # can still surface in semantic search until the next docs-mode update
-        # (which does delete it) or a reindex.
+        # Swept rows cannot be rediscovered from SQL on the next update.
+        # Failed vector removal therefore keeps their exact IDs in cleanup
+        # debt, retried through the same delete-only path without embedding.
     finally:
         await engine.dispose()
         if timings is not None:
