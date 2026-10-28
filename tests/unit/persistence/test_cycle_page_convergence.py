@@ -42,6 +42,9 @@ class _FakeBuilder:
     def graph(self):
         return self._graph
 
+    def pagerank(self):
+        return {}
+
 
 async def _add_scc_page(async_session, repo_id: str, members: list[str]) -> str:
     from repowise.core.persistence.crud import upsert_page
@@ -63,6 +66,46 @@ async def _add_scc_page(async_session, repo_id: str, members: list[str]) -> str:
 
 @pytest.mark.asyncio
 class TestCyclePageSweep:
+    async def test_structural_related_backfill_preserves_model_page_timestamp(
+        self, async_session, repo_id
+    ):
+        """A graph metadata refresh must not look like a new model-written page."""
+        import json
+        from datetime import datetime
+        from types import SimpleNamespace
+        from repowise.core.persistence.crud import upsert_page
+        from repowise.core.pipeline.incremental.persist_index import backfill_related
+
+        await upsert_page(
+            async_session,
+            **make_page_kwargs(
+                repo_id,
+                page_id="module_page:src",
+                page_type="module_page",
+                target_path="src",
+                provider_name="codex_cli",
+                model_name="codex_cli/gpt-6-luna",
+            ),
+        )
+        page = await async_session.get(Page, "module_page:src")
+        page.metadata_json = json.dumps(
+            {"related_pages": [{"target_page_id": "removed", "reason": "imports", "weight": 1}]}
+        )
+        page.updated_at = datetime(2020, 1, 2, 3, 4, 5)
+        await async_session.flush()
+        old = (page.content, page.digest, page.updated_at, page.model_name)
+        ctx = SimpleNamespace(
+            session=async_session,
+            repo_id=repo_id,
+            graph_builder=_FakeBuilder([]),
+            git_meta_map={},
+            timings=None,
+            log=lambda *_: None,
+        )
+        await backfill_related(ctx)
+        await async_session.refresh(page)
+        assert (page.content, page.digest, page.updated_at, page.model_name) == old
+
     @pytest.mark.parametrize(
         "pass_vector_store", [True, False], ids=["passed-store", "delete-only-open"]
     )
