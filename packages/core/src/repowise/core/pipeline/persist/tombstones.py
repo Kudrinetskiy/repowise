@@ -36,6 +36,103 @@ _log = logging.getLogger("repowise.core.pipeline.persist")
 _STALE_ID_CHUNK = 500
 
 
+async def tombstone_case_alias_pages(
+    session: Any, repo_id: str, root: Path, parsed_files: list[Any]
+) -> list[str]:
+    """Retire only proven template aliases with a current persisted replacement.
+
+    These sources still exist: ordinary deleted-file reconciliation is not
+    their owner. Returning IDs uses the native post-commit FTS/vector cleanup
+    and retry debt path, without touching model prose or fabricating symbols.
+    """
+    from sqlalchemy import select, update
+
+    from repowise.core.generation.models import compute_page_id
+    from repowise.core.generation.page_generator.structural import (
+        FILE_PAGE_TEMPLATE,
+        SYMBOL_SPOTLIGHT_TEMPLATE,
+        structural_content_hash,
+        structural_fingerprint,
+    )
+    from repowise.core.generation.styles import resolve_style
+    from repowise.core.ingestion.path_identity import GitPathIdentity
+    from repowise.core.persistence.models import Page
+    from repowise.core.repo_config import load_repo_config
+
+    identities = GitPathIdentity(root)
+    rows = list(
+        (
+            await session.execute(
+                select(
+                    Page.id,
+                    Page.page_type,
+                    Page.target_path,
+                    Page.freshness_status,
+                    Page.metadata_json,
+                ).where(
+                    Page.repository_id == repo_id,
+                    Page.provider_name == "template",
+                    Page.page_type.in_(["file_page", "symbol_spotlight"]),
+                    Page.freshness_status != "tombstone",
+                )
+            )
+        ).all()
+    )
+    aliases = []
+    for page in rows:
+        path, sep, symbol = (page.target_path or "").partition("::")
+        canonical = identities.canonical(path)
+        if canonical != path:
+            aliases.append((page, canonical, sep + symbol))
+    if not aliases:
+        return []
+    subjects = {pf.file_info.path: pf.content_hash for pf in parsed_files if pf.content_hash}
+    cfg = load_repo_config(root)
+    style = resolve_style(cfg.get("wiki_style", "comprehensive"), repo_path=root)
+    fingerprints = {
+        kind: structural_fingerprint(
+            template,
+            language=cfg.get("language", "en"),
+            style_fingerprint=style.fingerprint,
+            template_dir=style.template_dir,
+        )
+        for kind, template in [
+            ("file_page", FILE_PAGE_TEMPLATE),
+            ("symbol_spotlight", SYMBOL_SPOTLIGHT_TEMPLATE),
+        ]
+    }
+    by_id = {page.id: page for page in rows}
+    marked = []
+    for page, canonical, suffix in aliases:
+        replacement = by_id.get(compute_page_id(page.page_type, canonical + suffix))
+        subject = subjects.get(canonical)
+        if replacement is None or replacement.freshness_status != "fresh" or not subject:
+            continue
+        try:
+            key = json.loads(replacement.metadata_json or "{}").get("render_key")
+            metadata = json.loads(page.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                continue
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if key != structural_content_hash(subject, fingerprints[page.page_type]):
+            continue
+        metadata["successor_paths"] = [canonical]
+        await session.execute(
+            update(Page)
+            .where(
+                Page.repository_id == repo_id,
+                Page.id == page.id,
+                Page.provider_name == "template",
+                Page.page_type == page.page_type,
+                Page.freshness_status != "tombstone",
+            )
+            .values(freshness_status="tombstone", metadata_json=json.dumps(metadata))
+        )
+        marked.append(page.id)
+    return marked
+
+
 def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
     """(dead_path, successor_paths) pairs from deleted/renamed file diffs.
 

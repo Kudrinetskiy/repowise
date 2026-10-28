@@ -19,6 +19,207 @@ REPOWISE = str(Path(sys.executable).with_name("repowise"))
 STALE_SENTINEL = "STALE STRUCTURAL PAGE SENTINEL"
 
 
+@pytest.mark.parametrize("failure_stage", ["none", "persist", "embed"])
+def test_case_alias_cache_repairs_tracked_ids_and_retires_only_template_alias(
+    tmp_path: Path, monkeypatch, failure_stage: str
+) -> None:
+    from repowise.cli.commands.update_cmd.command import _idle_stale_renderer_paths
+    from repowise.cli.helpers import run_async
+    from repowise.core.cache_seal import (
+        dump_sealed_pickle,
+        load_sealed_pickle,
+        reset_key_cache_for_tests,
+    )
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    names = [f"scripts/check_{i}.py" for i in range(6)]
+    repo = _init_repo(
+        tmp_path,
+        extra_files={
+            **{path: f"def check_{i}():\n    return {i}\n" for i, path in enumerate(names)},
+            "main.py": "from scripts.check_0 import check_0\n\ndef greet():\n    return check_0()\n",
+        },
+    )
+    _stabilize_fixture(repo)
+    _set_llm_docs_mode(repo)
+    (repo / "scripts").rename(repo / "temporary-case")
+    (repo / "temporary-case").rename(repo / "Scripts")
+    if not (repo / names[0]).exists():
+        pytest.skip("requires a case-insensitive filesystem")
+    reset_key_cache_for_tests()
+    cache = repo / ".repowise/parse_cache.pkl"
+    payload = load_sealed_pickle(cache, domain="parse_cache.pkl")
+    payload["files"] = {
+        (path.replace("scripts/", "Scripts/"), subject): blob
+        for (path, subject), blob in payload["files"].items()
+    }
+    dump_sealed_pickle(cache, payload, domain="parse_cache.pkl")
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        template = dict(
+            db.execute("SELECT * FROM wiki_pages WHERE id=?", (f"file_page:{names[0]}",)).fetchone()
+        )
+        for path in names:
+            db.execute(
+                "UPDATE wiki_pages SET metadata_json=?, freshness_status='stale' WHERE id=?",
+                (json.dumps({"render_key": "obsolete"}), f"file_page:{path}"),
+            )
+        alias = {
+            **template,
+            "id": "file_page:Scripts/check_0.py",
+            "target_path": "Scripts/check_0.py",
+        }
+        authored = {
+            **alias,
+            "id": "symbol_spotlight:Scripts/check_0.py::authored",
+            "target_path": "Scripts/check_0.py::authored",
+            "page_type": "symbol_spotlight",
+            "provider_name": "original-model",
+            "content": "Preserve authored alias prose",
+        }
+        legacy_spot = {
+            **template,
+            "id": "symbol_spotlight:scripts/check_0.py::check_0",
+            "target_path": "scripts/check_0.py::check_0",
+            "page_type": "symbol_spotlight",
+            "metadata_json": json.dumps({"render_key": "obsolete"}),
+            "content": "Obsolete tracked spotlight",
+            "freshness_status": "stale",
+        }
+        for row in [alias, authored]:
+            db.execute(
+                f"INSERT INTO wiki_pages ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                list(row.values()),
+            )
+        assert db.execute("SELECT 1 FROM wiki_pages WHERE id=?", (legacy_spot["id"],)).fetchone()
+        db.execute(
+            "UPDATE wiki_pages SET content=?,metadata_json=?,freshness_status='stale' WHERE id=?",
+            (legacy_spot["content"], legacy_spot["metadata_json"], legacy_spot["id"]),
+        )
+        db.execute(
+            "INSERT INTO page_fts(page_id,title,content) VALUES (?,?,?)",
+            (alias["id"], alias["title"], alias["content"]),
+        )
+    store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+    run_async(
+        store.embed_batch(
+            [
+                (row["id"], row["content"], {"target_path": row["target_path"]})
+                for row in [alias, authored]
+            ]
+        )
+    )
+    vector_before = run_async(store.list_page_ids())
+    run_async(store.close())
+    marker = json.loads((repo / ".repowise/state.json").read_text()).get("last_docs_commit")
+    source_before = {path: (repo / path).read_bytes() for path in names}
+    # The idle gate must schedule a parse; treating the capital cache key as
+    # already current would leave graph IDs and the template alias incoherent.
+    assert set(_idle_stale_renderer_paths(repo)) == set(names)
+
+    def no_model(*_a, **_k):
+        raise AssertionError("case identity repair must not resolve a model")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", no_model
+    )
+    args = ["update", str(repo), "--index-only", "--no-workspace", "--no-agents"]
+    if failure_stage != "none":
+        from repowise.cli.commands.update_cmd import deterministic
+
+        def refuse_persist(**_kwargs):
+            raise RuntimeError("forced canonical persistence failure")
+
+        class FailingVectorStore:
+            async def get_page_summaries_by_paths(self, _paths):
+                return {}
+
+            async def embed_batch(self, _items):
+                raise RuntimeError("forced canonical embedding failure")
+
+        with monkeypatch.context() as failure:
+            if failure_stage == "persist":
+                failure.setattr(deterministic, "persist_deterministic_pages", refuse_persist)
+            else:
+                failure.setattr(
+                    deterministic, "deterministic_embedder_name", lambda _cfg: "test-real"
+                )
+                failure.setattr("repowise.cli.providers.build_embedder", lambda *_a: MockEmbedder())
+                failure.setattr(
+                    "repowise.cli.providers.build_vector_store", lambda *_a: FailingVectorStore()
+                )
+            failed = CliRunner().invoke(cli, args)
+        assert "forced canonical" in failed.output
+        with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+            assert db.execute(
+                "SELECT freshness_status FROM wiki_pages WHERE id=?", (alias["id"],)
+            ).fetchone() == ("fresh",)
+            assert (
+                db.execute("SELECT 1 FROM page_fts WHERE page_id=?", (alias["id"],)).fetchone()
+                is not None
+            )
+        store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+        assert run_async(store.list_page_ids()) == vector_before
+        run_async(store.close())
+        from repowise.cli.commands.update_cmd.command import (
+            clear_update_queued,
+            release_update_lock,
+        )
+
+        release_update_lock(repo)
+        clear_update_queued(repo)
+    repaired = CliRunner().invoke(cli, args)
+    assert repaired.exit_code == 0, repaired.output
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        for path in names:
+            row = db.execute(
+                "SELECT * FROM wiki_pages WHERE id=?", (f"file_page:{path}",)
+            ).fetchone()
+            assert row["freshness_status"] == "fresh", repaired.output
+            assert json.loads(row["metadata_json"])["render_key"] != "obsolete"
+        spot = db.execute(
+            "SELECT content,metadata_json,freshness_status FROM wiki_pages WHERE id=?",
+            (legacy_spot["id"],),
+        ).fetchone()
+        assert spot[0] != legacy_spot["content"]
+        assert json.loads(spot[1])["render_key"] != "obsolete" and spot[2] == "fresh"
+        assert (
+            db.execute(
+                "SELECT freshness_status FROM wiki_pages WHERE id=?", (alias["id"],)
+            ).fetchone()[0]
+            == "tombstone"
+        )
+        assert (
+            db.execute("SELECT 1 FROM page_fts WHERE page_id=?", (alias["id"],)).fetchone() is None
+        )
+        preserved = dict(
+            db.execute("SELECT * FROM wiki_pages WHERE id=?", (authored["id"],)).fetchone()
+        )
+        for field in [
+            "content",
+            "digest",
+            "provider_name",
+            "model_name",
+            "updated_at",
+            "created_at",
+            "input_tokens",
+            "output_tokens",
+            "metadata_json",
+        ]:
+            assert preserved[field] == authored[field]
+    assert _idle_stale_renderer_paths(repo) == []
+    store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+    assert run_async(store.list_page_ids()) == vector_before - {alias["id"]}
+    run_async(store.close())
+    again = CliRunner().invoke(cli, args)
+    assert again.exit_code == 0 and "Already up to date" in again.output
+    assert {path: (repo / path).read_bytes() for path in names} == source_before
+    assert json.loads((repo / ".repowise/state.json").read_text()).get("last_docs_commit") == marker
+
+
 def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["REPOWISE_TELEMETRY_DISABLED"] = "1"

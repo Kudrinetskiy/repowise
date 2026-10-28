@@ -657,8 +657,15 @@ def _idle_stale_renderer_paths(repo_path: Path) -> list[str]:
         if payload.get("fingerprint") != parser_fingerprint():
             raise ValueError("parse cache does not match the current parser")
         subjects: dict[str, set[str]] = {}
+        from repowise.core.ingestion.path_identity import GitPathIdentity
+
+        identities = GitPathIdentity(repo_path)
+        alias_debt: set[str] = set()
         for path, subject in payload.get("files", {}):
             subjects.setdefault(path, set()).add(subject)
+            canonical = identities.canonical(path)
+            if canonical != path:
+                alias_debt.add(canonical)
         language, style_fp, template_dir = _renderer_inputs(repo_path)
         kwargs = dict(language=language, style_fingerprint=style_fp, template_dir=template_dir)
         file_fp = structural_fingerprint(FILE_PAGE_TEMPLATE, **kwargs)
@@ -667,6 +674,12 @@ def _idle_stale_renderer_paths(repo_path: Path) -> list[str]:
         stale, unknown = [], 0
         head_tree = None
         for path in sorted(paths):
+            canonical = identities.canonical(path)
+            if canonical != path or canonical in alias_debt:
+                # This is identity repair, not permission to reuse a blob whose
+                # nested symbol paths still carry the physical spelling.
+                stale.append(canonical)
+                continue
             source = root / path
             if not source.resolve().is_relative_to(root) or source.is_symlink():
                 unknown += 1

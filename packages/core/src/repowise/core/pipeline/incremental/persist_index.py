@@ -129,6 +129,12 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.git_meta_map,
         )
         ctx.swept_page_ids += ctx.deselected_page_ids
+        if ctx.parsed_files:
+            from repowise.core.pipeline.persist.tombstones import tombstone_case_alias_pages
+
+            ctx.tombstoned_page_ids += await tombstone_case_alias_pages(
+                ctx.session, ctx.repo_id, Path(ctx.repo_path), ctx.parsed_files
+            )
 
 
 def _generation_config(repo_path: Any) -> Any:
