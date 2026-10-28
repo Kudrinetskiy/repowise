@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `44a5aeb4c9ba79936688d562192c33cdbc45cb5e`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `035a12f1ab600286542b0f6e21d2db6242792178`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -60,7 +60,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@44a5aeb4c9ba79936688d562192c33cdbc45cb5e"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@035a12f1ab600286542b0f6e21d2db6242792178"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -191,6 +191,10 @@ repowise update /path/to/repository --no-workspace --no-agents \
 При interruption идентичный restyle использует checkpointed persistence; при stale/contamination/неизвестном failure не повторять команду вслепую.
 
 ## 8. Acceptance, accounting и contamination
+
+В текущем pin при явно сохранённом Ollama повторный config-pass не вычисляет заново уже успешно записанный в этом же запуске точный payload, если совпадают store/table/model/endpoint/dimensions. Изменённый payload, неполный результат или неизвестная совместимость не переиспользуются; для других embedders сохраняется прежний консервативный путь. Это не persistent cache. Проверка границы: 2024 целевых и смежных теста, сборка четырёх пакетов и smoke собранного wheel (preview без provider/wiki/state записи, чистый MCP stdout). Это не полный suite и не доказательство здоровья рабочего индекса.
+
+Ошибка SQLite `database disk image is malformed` означает неуспех обслуживания независимо от exit code и необязательных warning. Изолировать повреждённый индекс; сначала native mode=ro integrity-диагноз, не повторный update/reindex/init/doctor --repair. Восстановление и страховая копия требуют отдельного разрешения. Проверить полный integrity/FK, сохранность всех не затронутых данных, prose и векторов до замены рабочей базы; копию удалять только после итоговой проверки и согласно решению пользователя. Конкретный ремонт из другого проекта не превращать в универсальный рецепт.
 
 Полный doctor --format json (не --quick) проверяет нужные stores/MCP. --quick сознательно пропускает запуск MCP и reconciliation vector/FTS. Проверять structured status/details каждого нужного check, exit code, пропущенные проверки. JSON выходит 1 при failed check; warn не равен fail. Optional/version warning классифицировать отдельно, не скрывать и не запускать repair автоматически. Старое All checks passed! не является универсальным парсером 0.59.
 

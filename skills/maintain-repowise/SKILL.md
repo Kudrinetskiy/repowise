@@ -32,7 +32,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `44a5aeb4c9ba79936688d562192c33cdbc45cb5e`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `035a12f1ab600286542b0f6e21d2db6242792178`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
 ### Target 0.59 contracts
 
@@ -298,6 +298,10 @@ Do not run another `generate`, `restyle`, `update`, `reindex`, hook, or repair c
 ## Interpret status and doctor literally
 
 The pinned full-scope structural update also refreshes SQL-proven retained current spotlight IDs in the same run while preserving native retirement and prose. A partial BatchEmbeddingError receives one retry for its exact failed_items only; successful items are not retried. Persistent failures retain the existing structural/config repair state, report unresolved IDs and do not authorize full reindex or prose generation. A later ordinary structural update after service recovery remains valid.
+
+For explicitly configured Ollama, config persistence reuses only exact successful payloads from this same run when database/table/model/endpoint/dimensions match. Changed or failed payloads are not reused; unknown identity and other embedders retain the conservative existing path. This is not a persistent cache or permission to skip vector reconciliation.
+
+SQLite integrity errors such as `database disk image is malformed` invalidate the update even if optional analysis only warns and the command exits zero. Isolate the affected index, preserve the failure evidence and use read-only native SQLite diagnosis before further CLI/MCP access. Do not automatically repeat update, reindex, repair or init. Database reconstruction and any safety copy require explicit approval; never discard a recovery copy until the replacement and required preservation checks pass.
 
 - `Last sync commit = HEAD`, `0 stale`, and `Drift=0.0%` prove their individual checks only.
 - When an update selects older-renderer pages, verify those structural pages' stored `metadata.render_key` against the current renderer and their indexed subject hashes. A global renderer fingerprint, unchanged timestamps or `freshness_status=fresh` do not establish that selected work ran. The pinned fork carries these paths into structural repair and checks the current authenticated parse cache before an idle exit, without reading source-only WIP. Missing, corrupt, oversized or unsafe-cache diagnostics mean the check is unverified, not successful. On a mismatch, stop mutations and diagnose the repair route; do not force markers, change docs mode, generate prose or reindex. After the cause is fixed and the recovery scope approved, Recipe 1A remains the no-model recovery command.
