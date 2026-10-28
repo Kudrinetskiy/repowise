@@ -51,9 +51,7 @@ def test_mcp_help_lists_streamable_http_transport() -> None:
 def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(
         cli, ["mcp", str(tmp_path), "--tools", "+get_execution_flows,-get_dead_code"]
@@ -68,9 +66,7 @@ def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
 def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--all", "--tools", "get_answer"])
 
@@ -80,14 +76,10 @@ def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     assert captured["workspace_mode"] is True
 
 
-def test_mcp_cli_no_workspace_flag_forces_single_repo(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_mcp_cli_no_workspace_flag_forces_single_repo(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--no-workspace"])
 
@@ -95,9 +87,7 @@ def test_mcp_cli_no_workspace_flag_forces_single_repo(
     assert captured["workspace_mode"] is False
 
 
-def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_mcp_cli_no_workspace_ignores_enclosing_workspace(monkeypatch, tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     nested = workspace / "vendor" / "microdot"
     nested.mkdir(parents=True)
@@ -114,9 +104,7 @@ def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
     (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw))
 
     result = CliRunner().invoke(cli, ["mcp", str(nested), "--no-workspace"])
 
@@ -280,7 +268,16 @@ def test_mcp_cli_passes_host_to_run_mcp(monkeypatch, tmp_path: Path) -> None:
 
     result = CliRunner().invoke(
         cli,
-        ["mcp", str(tmp_path), "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "7342"],
+        [
+            "mcp",
+            str(tmp_path),
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "7342",
+        ],
     )
 
     assert result.exit_code == 0
@@ -524,9 +521,7 @@ def test_the_way_a_session_ended_reaches_the_invocation_outcome(
     (tmp_path / ".repowise").mkdir()
     recorded: dict[str, object] = {}
     monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
-    monkeypatch.setattr(
-        "repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed"
-    )
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed")
 
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
@@ -562,9 +557,7 @@ def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -
     from repowise.server.mcp_server import _server
 
     (tmp_path / ".repowise").mkdir()
-    monkeypatch.setattr(
-        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
-    )
+    monkeypatch.setattr("repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None)
     monkeypatch.setattr(
         _server.mcp,
         "run",

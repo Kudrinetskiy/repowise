@@ -84,7 +84,9 @@ def _write_vscode_files(
     try:
         if not existing_only or (repo_path / ".vscode" / "extensions.json").exists():
             ext_path = save_vscode_extensions_config(repo_path)
-            console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext_path})")
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext_path})"
+            )
             written.append(Path(ext_path))
     except ValueError:
         console_obj.print(
@@ -107,6 +109,8 @@ def _write_vscode_files(
                 "markers are unpaired or duplicated, or it could not be read.[/]"
             )
         else:
-            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})")
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})"
+            )
             written.append(instructions.path)
     return written

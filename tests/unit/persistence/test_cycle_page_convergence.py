@@ -73,6 +73,7 @@ class TestCyclePageSweep:
         import json
         from datetime import datetime
         from types import SimpleNamespace
+
         from repowise.core.persistence.crud import upsert_page
         from repowise.core.pipeline.incremental.persist_index import backfill_related
 
