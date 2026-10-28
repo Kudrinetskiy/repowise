@@ -60,6 +60,27 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         if sym is not None:
             top_symbols.append((sym, pf))
 
+    if (
+        getattr(run.config, "deterministic", False)
+        and not run.resume
+        and run.only_page_ids is not None
+        and run.persisted_page_ids
+    ):
+        # A scoped structural repair may keep rows the full-repo retirement
+        # margin retains but this affected-file slice no longer ranks. Only
+        # requested, persisted IDs with a current native symbol can be added.
+        existing = run.only_page_ids & run.persisted_page_ids
+        seen = {
+            compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}")
+            for sym, pf in top_symbols
+        }
+        for pf in parsed_by_path.values():
+            for sym in pf.symbols:
+                page_id = compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}")
+                if page_id in existing and page_id not in seen:
+                    top_symbols.append((sym, pf))
+                    seen.add(page_id)
+
     level1 = [
         (
             compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"),

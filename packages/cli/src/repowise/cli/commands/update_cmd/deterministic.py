@@ -100,6 +100,33 @@ async def _load_model_page_ids(repo_path: Path) -> set[str]:
         await engine.dispose()
 
 
+def load_live_template_spotlight_ids(repo_path: Path) -> set[str]:
+    """Existing structural rows eligible for explicit, no-spend repair."""
+    return run_async(_load_live_template_spotlight_ids(repo_path))
+
+
+async def _load_live_template_spotlight_ids(repo_path: Path) -> set[str]:
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                select(Page.id).where(
+                    Page.page_type == "symbol_spotlight",
+                    Page.provider_name == "template",
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            return set(rows.scalars())
+    finally:
+        await engine.dispose()
+
+
 def regenerate_deterministic_pages(
     *,
     repo_path: Path,
@@ -261,6 +288,13 @@ def _render_pages(
             if only_page_ids is None:
                 only_page_ids = set(prior_page_ids or {}) | file_ids | spotlight_ids
             only_page_ids -= model_ids
+        existing_repairs = None
+        if (
+            not full_scope
+            and only_page_ids
+            and any(pid.startswith("symbol_spotlight:") for pid in only_page_ids)
+        ):
+            existing_repairs = load_live_template_spotlight_ids(repo_path) & only_page_ids
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
@@ -318,6 +352,7 @@ def _render_pages(
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
                     only_page_ids=only_page_ids,
+                    persisted_page_ids=existing_repairs,
                     # Without it a failed embed was logged and nothing else.
                     on_warning=degraded.append,
                 )

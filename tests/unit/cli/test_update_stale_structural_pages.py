@@ -910,3 +910,121 @@ def test_idle_renderer_scan_reports_unverified_cache_without_reading_source(
         assert "Could not check idle structural render keys" in output
     else:
         assert "no safe indexed subject" in output
+
+
+def test_scoped_repair_refreshes_existing_spotlight_outside_subset_rank_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.update_cmd.command import clear_update_queued, release_update_lock
+    from repowise.core.cache_seal import reset_key_cache_for_tests
+
+    def functions(first: int, stop: int) -> str:
+        return "\n".join(
+            f"def symbol_{i:03d}(value):\n    return value + {i}\n" for i in range(first, stop)
+        )
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = _init_repo(
+        tmp_path,
+        extra_files={
+            "main.py": functions(0, 20),
+            "zother.py": functions(20, 200),
+        },
+    )
+    _stabilize_fixture(repo)
+    _set_llm_docs_mode(repo)
+    reset_key_cache_for_tests()
+    state_path = repo / ".repowise/state.json"
+    state = json.loads(state_path.read_text())
+    target_id = "symbol_spotlight:main.py::symbol_019"
+    model_id = "symbol_spotlight:main.py::symbol_016"
+    tombstone_id = "symbol_spotlight:main.py::symbol_017"
+    removed_id = "symbol_spotlight:main.py::removed_symbol"
+    jobs_dir = repo / ".repowise/jobs"
+    checkpoints_before = {p.name: p.read_bytes() for p in jobs_dir.glob("*.json")}
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        target = dict(db.execute("SELECT * FROM wiki_pages WHERE id=?", (target_id,)).fetchone())
+        db.execute(
+            "UPDATE wiki_pages SET content=?,metadata_json=? WHERE id=?",
+            ("Obsolete retained spotlight body", json.dumps({"render_key": "old-key"}), target_id),
+        )
+        db.execute(
+            "UPDATE wiki_pages SET provider_name='original-model', model_name='kept-model', "
+            "content='Preserved model spotlight',digest='Preserved digest' WHERE id=?",
+            (model_id,),
+        )
+        model = dict(db.execute("SELECT * FROM wiki_pages WHERE id=?", (model_id,)).fetchone())
+        db.execute("UPDATE wiki_pages SET freshness_status='tombstone' WHERE id=?", (tombstone_id,))
+        removed = {**target, "id": removed_id, "target_path": "main.py::removed_symbol"}
+        db.execute(
+            f"INSERT INTO wiki_pages ({', '.join(removed)}) VALUES ({', '.join('?' for _ in removed)})",
+            list(removed.values()),
+        )
+    # The new symbol is a valid current candidate, but was never persisted and
+    # is below this one-file render's 10% slice. It must not be force-created.
+    (repo / "main.py").write_text(functions(0, 21))
+    _git(repo, "add", "main.py")
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "change the affected subset",
+    )
+
+    def no_model(*_a, **_k):
+        raise AssertionError("structural repair must not resolve a model")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", no_model
+    )
+    args = ["update", str(repo), "--index-only", "--no-workspace", "--no-agents"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    # This internal structural renderer has no JobSystem; unlike public
+    # generation it must not emit an unaccounted file checkpoint.
+    assert {p.name: p.read_bytes() for p in jobs_dir.glob("*.json")} == checkpoints_before
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        repaired = dict(db.execute("SELECT * FROM wiki_pages WHERE id=?", (target_id,)).fetchone())
+        assert json.loads(repaired["metadata_json"])["render_key"] != "old-key"
+        assert repaired["content"] != "Obsolete retained spotlight body"
+        assert repaired["freshness_status"] == "fresh"
+        assert (
+            db.execute(
+                "SELECT id FROM wiki_pages WHERE id=?", ("symbol_spotlight:main.py::symbol_020",)
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT freshness_status FROM wiki_pages WHERE id=?", (tombstone_id,)
+            ).fetchone()[0]
+            == "tombstone"
+        )
+        assert db.execute("SELECT id FROM wiki_pages WHERE id=?", (removed_id,)).fetchone() is None
+        preserved = dict(db.execute("SELECT * FROM wiki_pages WHERE id=?", (model_id,)).fetchone())
+        for field in [
+            "content",
+            "digest",
+            "model_name",
+            "provider_name",
+            "created_at",
+            "updated_at",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+        ]:
+            assert preserved[field] == model[field]
+    release_update_lock(repo)
+    clear_update_queued(repo)
+    retry = CliRunner().invoke(cli, args)
+    assert retry.exit_code == 0, retry.output
+    assert "Already up to date" in retry.output
+    assert json.loads(state_path.read_text()).get("last_docs_commit") == state.get(
+        "last_docs_commit"
+    )
