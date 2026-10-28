@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `66e175a4ed75cabd5aee81a290e3e564e5fb9772`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `44a5aeb4c9ba79936688d562192c33cdbc45cb5e`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -60,7 +60,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@66e175a4ed75cabd5aee81a290e3e564e5fb9772"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@44a5aeb4c9ba79936688d562192c33cdbc45cb5e"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -196,7 +196,7 @@ repowise update /path/to/repository --no-workspace --no-agents \
 
 Требуемые критерии установить для операции: exact sync HEAD, eligible SQL/vector/FTS sets и drift, stale state, docs pointer/prose preservation или scope-written output, фактический MCP smoke при наличии регистрации. Raw wiki_pages count не равен eligible search set; excluded/below-floor/tombstone строки не должны провоцировать лишний reindex.
 
-В 0.59 Coordinator считает все SQL-страницы, включая tombstones. После правильного удаления их векторов его raw drift может остаться ненулевым; это не опровергает доказанное точное совпадение eligible ID sets. Сообщить буквальный WARN/FAIL отдельно и объяснить популяции, не удалять SQL-историю и не перестраивать здоровый vector store ради нулевого счётчика. Равные raw counts тоже не доказывают равенства ID sets.
+В закреплённом fork doctor сравнивает eligible SQL/vector IDs и отдельно показывает raw SQL pages. Tombstones и намеренно неиндексируемые страницы не создают ложный drift; реальные missing/orphan IDs, включая одинаковые количества разных IDs, остаются FAIL. Неизвестное/нечитаемое configured store не выдаётся за OK. Явный mock без vector store отмечается WARN с semantic search off. В старой/официальной 0.59 raw счётчик может ошибаться; не удалять SQL-историю и не перестраивать здоровые векторы ради нуля.
 
 Для structural-only результата требуется отсутствие нерешённых stale structural pages в согласованном repair scope, не глобальный ноль stale pages. Сохранённую stale model-written concept prose перечислить отдельно без регенерации: её наличие не разрешает generate и не превращает успешный structural refresh в незавершённый structural repair. Все doctor warnings/failures по-прежнему разобрать и сообщить; такой результат не означает полностью чистую wiki или безусловный PASS всего doctor.
 
@@ -225,6 +225,8 @@ Reindex не пишет prose, но пишет embeddings и может вызв
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 
 ## Источники текущей проверки
+
+- Текущий follow-up: same-run retained structural refresh и exact failed-items embedding retry проверены RED→GREEN; постоянная ошибка сохраняет existing stale/fingerprint repair, без новой очереди и автоматического reindex. Doctor использует eligible-ID reconciliation с настоящими missing/orphan/unknown negative controls. Объединённый прогон2165PASS/1FAIL; найденный SCC-only лишний SQL dependency исправлен owner guard без изменения тестовых ожиданий, затем exact1PASS и containing7PASS. Остальная доказательная база неизменна и переиспользована; это не новый полный suite. Финальная сборка4пакетов и wheel preview/strictstdio PASS.
 
 - MCP readiness текущего pin: первый semantic search и answer-retrieval ожидают завершения загрузки и получают ресурсы только своего single-repo контекста; workspace/root/event/SQL-session isolation и bounded/keyless fallback сохранены. RED→GREEN, финальный owner30PASS, смежные модули293PASS; Ruff lint/diff и сборка четырёх пакетов/изолированный wheel preview/чистый MCP stdio PASS. Whole-file format-check двух файлов остаётся RED точно как на исходном HEAD; несвязанные переформатирования не включены. Это MCP-only изменение не требует повторного update/reindex или генерации существующих индексов.
 
