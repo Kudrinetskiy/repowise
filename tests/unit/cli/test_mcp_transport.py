@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+
+def test_mcp_stdio_keeps_early_structlog_events_out_of_stdout(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    script = textwrap.dedent(
+        f"""
+        import structlog
+        from repowise.cli.commands import mcp_cmd
+        import repowise.server.mcp_server as mcp_server
+
+        def load_dotenv(_path):
+            structlog.get_logger().debug("early protocol channel check")
+
+        mcp_cmd.load_dotenv = load_dotenv
+        mcp_server.run_mcp = lambda **kwargs: "client_closed"
+        mcp_cmd.mcp_command.callback(
+            path={str(tmp_path)!r}, transport="stdio", port=7338, host=None,
+            tools=None, all_tools=False, no_workspace=True,
+        )
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "early protocol channel check" in result.stderr
 
 
 def test_mcp_help_lists_streamable_http_transport() -> None:

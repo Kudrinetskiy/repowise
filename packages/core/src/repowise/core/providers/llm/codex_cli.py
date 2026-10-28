@@ -274,7 +274,7 @@ def _combine_prompt(system_prompt: str, user_prompt: str) -> str:
 
 def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     """Parse Codex JSONL output, ignoring non-JSON noise."""
-    content_parts: list[str] = []
+    final_content = ""
     usage: dict[str, Any] = {}
 
     for event in iter_jsonl(stdout):
@@ -283,13 +283,13 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
             if item.get("type") == "agent_message":
                 text = item.get("text")
                 if isinstance(text, str) and text:
-                    content_parts.append(text)
+                    final_content = text
         elif event.get("type") == "turn.completed":
             event_usage = event.get("usage")
             if isinstance(event_usage, dict):
                 usage = event_usage
 
-    return "\n".join(content_parts), usage
+    return final_content, usage
 
 
 class CodexCliProvider(AgentCliProvider):
