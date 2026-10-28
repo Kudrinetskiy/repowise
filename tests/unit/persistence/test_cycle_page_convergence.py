@@ -63,6 +63,110 @@ async def _add_scc_page(async_session, repo_id: str, members: list[str]) -> str:
 
 @pytest.mark.asyncio
 class TestCyclePageSweep:
+    @pytest.mark.parametrize(
+        "pass_vector_store", [True, False], ids=["passed-store", "delete-only-open"]
+    )
+    @pytest.mark.parametrize("fail_delete", [False, True], ids=["success", "retry-debt"])
+    async def test_incremental_sweep_removes_vectors_without_embedding(
+        self, tmp_path, monkeypatch, pass_vector_store, fail_delete
+    ) -> None:
+        from sqlalchemy import select, text
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+        )
+        from repowise.core.persistence.database import resolve_db_url
+        from repowise.core.persistence.search import FullTextSearch
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
+        from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
+        from repowise.core.pipeline.incremental import persist_incremental_index
+        from repowise.core.providers.embedding.base import MockEmbedder
+
+        (tmp_path / ".repowise").mkdir()
+        engine = create_engine(resolve_db_url(tmp_path))
+        store = LanceDBVectorStore(str(tmp_path / ".repowise" / "lancedb"), MockEmbedder())
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await insert_repo(session, name=tmp_path.name, local_path=str(tmp_path))
+                ghost = await _add_scc_page(session, repo.id, ["gone/a.py", "gone/b.py"])
+                live = await _add_scc_page(session, repo.id, ["live/a.py", "live/b.py"])
+
+            fts = FullTextSearch(engine)
+            await fts.ensure_index()
+            for pid in (ghost, live):
+                await fts.index(
+                    pid,
+                    "Circular Dependency",
+                    "Mutual imports connect both modules into a circular dependency. " * 10,
+                    summary="Mutual imports",
+                    target_path=pid,
+                )
+            async with engine.connect() as conn:
+                assert set(
+                    (await conn.execute(text("SELECT page_id FROM page_fts"))).scalars()
+                ) == {ghost, live}
+            decision = "decision:kept"
+            await store.embed_batch(
+                [(pid, "Circular dependency evidence", {}) for pid in (ghost, live, decision)]
+            )
+            assert await store.list_page_ids() == {ghost, live, decision}
+            if not pass_vector_store:
+                await store.close()
+
+            async def forbidden_embedding(*args, **kwargs):
+                pytest.fail("Cycle cleanup must not embed")
+
+            monkeypatch.setattr(MockEmbedder, "embed", forbidden_embedding)
+            degraded: list[str] = []
+
+            async def persist_once():
+                await persist_incremental_index(
+                    tmp_path,
+                    _FakeBuilder([{"live/a.py", "live/b.py"}]),
+                    {},
+                    None,
+                    None,
+                    [],
+                    parsed_files=[],
+                    vector_store=store if pass_vector_store else None,
+                    degraded=degraded,
+                )
+
+            if fail_delete:
+
+                async def unavailable_delete(*args, **kwargs):
+                    raise RuntimeError("vector delete unavailable")
+
+                with monkeypatch.context() as failure:
+                    failure.setattr(LanceDBVectorStore, "delete_many", unavailable_delete)
+                    await persist_once()
+                assert await store.list_page_ids() == {ghost, live, decision}
+                assert load_cleanup_debt(tmp_path)["vectors"] == {ghost}
+                assert "Tombstone vector removal: vector delete unavailable" in degraded
+                degraded.clear()
+            await persist_once()
+            if not pass_vector_store:
+                # The cleanup used a separate handle; read its committed version.
+                await store.close()
+
+            async with get_session(sf) as session:
+                assert set((await session.execute(select(Page.id))).scalars()) == {live}
+            async with engine.connect() as conn:
+                assert set(
+                    (await conn.execute(text("SELECT page_id FROM page_fts"))).scalars()
+                ) == {live}
+            assert await store.list_page_ids() == {live, decision}
+            assert load_cleanup_debt(tmp_path)["vectors"] == set()
+            assert not [entry for entry in degraded if entry.startswith("Tombstone vector")]
+        finally:
+            await store.close()
+            await engine.dispose()
+
     async def test_page_for_a_vanished_cycle_is_deleted(self, async_session, repo_id) -> None:
         ghost = await _add_scc_page(async_session, repo_id, ["acl/acl.go", "acl/user.go"])
         # The rebuilt graph finds no cycle at all.

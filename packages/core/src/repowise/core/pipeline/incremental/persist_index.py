@@ -647,7 +647,7 @@ async def _write(ctx: IncrementalPersist) -> None:
             set(ctx.tombstoned_page_ids) | set(ctx.swept_page_ids) | cleanup_debt["fts"]
         )
         ctx.vector_cleanup_ids = (
-            set(ctx.tombstoned_page_ids) | set(ctx.deselected_page_ids) | cleanup_debt["vectors"]
+            set(ctx.tombstoned_page_ids) | set(ctx.swept_page_ids) | cleanup_debt["vectors"]
         )
         await run_steps(ctx, CLEANUP_STEPS)
         with timed(timings, "persist.planner_stats"):
