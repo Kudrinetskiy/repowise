@@ -96,7 +96,12 @@ log = structlog.get_logger(__name__)
 
 
 def _fail_on_embed_failure(
-    repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
+    repo_path: Path,
+    embedder: str | None,
+    embed_failed_pages: int,
+    emitter: Any,
+    *,
+    retry_command: str | None = None,
 ) -> None:
     """Exit non-zero, and say semantic search is unavailable, after a failed embed.
 
@@ -111,13 +116,19 @@ def _fail_on_embed_failure(
     message = embed_failure_message(embedder, embed_failed_pages)
     if message is None:
         return
+    if retry_command is not None:
+        message = (
+            f"Embedding failed for {embed_failed_pages} page(s), so semantic search is "
+            "unavailable. Structural repair remains pending; after fixing the cause "
+            f"above, retry the update: {retry_command}"
+        )
     state = load_state(repo_path)
     stamp_index_scope(
         state,
         load_config(repo_path),
         search={
             "semantic": "unavailable",
-            "next_command": semantic_search_command(repo_path, embedder),
+            "next_command": retry_command or semantic_search_command(repo_path, embedder),
         },
     )
     save_state(repo_path, state)
@@ -1671,6 +1682,8 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         docs_mode=pages.docs_mode,
     )
     if pages.render_stats.get("embed_failed_pages"):
+        import shlex
+
         from .deterministic import deterministic_embedder_name
 
         _fail_on_embed_failure(
@@ -1678,6 +1691,10 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             deterministic_embedder_name(run.cfg),
             pages.render_stats["embed_failed_pages"],
             run.emitter,
+            retry_command=(
+                f"repowise update {shlex.quote(str(repo_path))} "
+                "--index-only --no-workspace --no-agents"
+            ),
         )
     return _emit_done(
         run,

@@ -288,13 +288,16 @@ def _render_pages(
             if only_page_ids is None:
                 only_page_ids = set(prior_page_ids or {}) | file_ids | spotlight_ids
             only_page_ids -= model_ids
+        # Full-scope config/renderer refreshes also retain native spotlights
+        # below the new-page cut. Refresh those existing rows in this pass;
+        # native retirement still independently decides which rows survive.
         existing_repairs = None
-        if (
-            not full_scope
-            and only_page_ids
-            and any(pid.startswith("symbol_spotlight:") for pid in only_page_ids)
+        if only_page_ids is None or any(
+            pid.startswith("symbol_spotlight:") for pid in only_page_ids
         ):
-            existing_repairs = load_live_template_spotlight_ids(repo_path) & only_page_ids
+            existing_repairs = load_live_template_spotlight_ids(repo_path)
+            if only_page_ids is not None:
+                existing_repairs &= only_page_ids
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,

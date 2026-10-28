@@ -822,6 +822,14 @@ def test_vector_store_failure_does_not_publish_page_as_fresh(
     monkeypatch,
     failure_stage: str,
 ) -> None:
+    from repowise.cli.commands.update_cmd.command import clear_update_queued, release_update_lock
+    from repowise.core.persistence.vector_store import (
+        BatchChunkFailure,
+        BatchEmbeddingError,
+        LanceDBVectorStore,
+    )
+    from repowise.core.providers.embedding.base import MockEmbedder
+
     repo = _init_repo(tmp_path)
     _stabilize_fixture(repo)
     _mark_file_page_stale(repo)
@@ -842,8 +850,17 @@ def test_vector_store_failure_does_not_publish_page_as_fresh(
         async def get_page_summaries_by_paths(self, _paths):
             return {}
 
-        async def embed_batch(self, _items):
-            raise RuntimeError("forced vector persistence failure")
+        async def embed_batch(self, items):
+            raise BatchEmbeddingError(
+                failures=[
+                    BatchChunkFailure(
+                        tuple(items),
+                        "persistence",
+                        RuntimeError("forced vector persistence failure"),
+                    )
+                ],
+                total_items=len(items),
+            )
 
     monkeypatch.setattr("repowise.cli.providers.build_vector_store", fail_vector)
     result = CliRunner().invoke(
@@ -857,6 +874,19 @@ def test_vector_store_failure_does_not_publish_page_as_fresh(
     assert (result.exit_code == 0) == (failure_stage == "creation"), result.output
     assert _stale_file_pages(repo) == 1
     assert "forced vector persistence failure" in result.output
+    # The failed desired output was never published as fresh. Its existing
+    # structural debt must drive a later ordinary update, not a noop or a
+    # blind re-embedding of the older stored SQL content.
+    monkeypatch.setattr(
+        "repowise.cli.providers.build_vector_store",
+        lambda *_args: LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder()),
+    )
+    release_update_lock(repo)
+    clear_update_queued(repo)
+    recovered = CliRunner().invoke(cli, ["update", str(repo), "--no-agents"])
+    assert recovered.exit_code == 0, recovered.output
+    assert "Already up to date" not in recovered.output
+    assert _stale_file_pages(repo) == 0
 
 
 def test_added_markdown_doc_becomes_searchable_file_page(tmp_path: Path) -> None:
@@ -1111,6 +1141,162 @@ def test_idle_renderer_scan_reports_unverified_cache_without_reading_source(
         assert "Could not check idle structural render keys" in output
     else:
         assert "no safe indexed subject" in output
+
+
+def test_full_scope_config_update_repairs_retained_spotlights_in_one_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import yaml
+
+    from repowise.cli.commands.update_cmd.command import (
+        _idle_stale_renderer_paths,
+        clear_update_queued,
+        release_update_lock,
+    )
+    from repowise.cli.helpers import run_async
+    from repowise.core.cache_seal import reset_key_cache_for_tests
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    def functions(start, stop):
+        return "\n".join(
+            f"def symbol_{i:03d}(value):\n    return value + {i}\n" for i in range(start, stop)
+        )
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = _init_repo(
+        tmp_path,
+        extra_files={
+            "main.py": "pass\n",
+            "a.py": functions(0, 40),
+            "c.py": functions(40, 60),
+            "d.py": functions(60, 80),
+            "z.py": functions(80, 500),
+            "zzclone_a.py": functions(500, 505),
+            "zzclone_b.py": functions(500, 505),
+            "zzclone_c.py": functions(500, 505),
+        },
+    )
+    _stabilize_fixture(repo)
+    _set_llm_docs_mode(repo)
+    reset_key_cache_for_tests()
+    state_before = json.loads((repo / ".repowise/state.json").read_text())
+    sources_before = {p.name: p.read_bytes() for p in repo.glob("*.py")}
+    ids = [f"symbol_spotlight:c.py::symbol_{i:03d}" for i in range(50, 60)]
+    ids += [f"symbol_spotlight:d.py::symbol_{i:03d}" for i in range(60, 75)]
+    retired_ids = [
+        "symbol_spotlight:z.py::symbol_499",
+        "symbol_spotlight:zzclone_c.py::symbol_500",
+        "symbol_spotlight:c.py::removed_symbol",
+    ]
+    tombstone_id = "symbol_spotlight:d.py::symbol_075"
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        template = dict(
+            db.execute(
+                "SELECT * FROM wiki_pages WHERE page_type='symbol_spotlight' LIMIT 1"
+            ).fetchone()
+        )
+        for page_id in [*ids, *retired_ids, tombstone_id]:
+            row = {
+                **template,
+                "id": page_id,
+                "target_path": page_id.partition(":")[2],
+                "metadata_json": json.dumps({"render_key": "old-retained-key"}),
+                "content": "Legacy retained spotlight",
+                "freshness_status": "fresh",
+            }
+            db.execute(
+                f"INSERT OR REPLACE INTO wiki_pages ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                list(row.values()),
+            )
+        db.execute("UPDATE wiki_pages SET freshness_status='tombstone' WHERE id=?", (tombstone_id,))
+        model = {
+            **template,
+            "id": "module_page:preserved-authored",
+            "page_type": "module_page",
+            "target_path": "",
+            "provider_name": "original-model",
+            "model_name": "kept-model",
+            "content": "Preserved authored content",
+            "digest": "Preserved digest",
+            "metadata_json": "{}",
+        }
+        db.execute(
+            f"INSERT INTO wiki_pages ({', '.join(model)}) VALUES ({', '.join('?' for _ in model)})",
+            list(model.values()),
+        )
+    store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+    run_async(
+        store.embed_batch(
+            [(pid, "Old stored vector body", {}) for pid in [*ids, *retired_ids, model["id"]]]
+        )
+    )
+    run_async(store.close())
+    config_path = repo / ".repowise/config.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg.update(enable_onboarding=False, dedupe_near_clones=True)
+    config_path.write_text(yaml.safe_dump(cfg))
+
+    def no_model(*_args, **_kwargs):
+        raise AssertionError("structural refresh must not resolve a prose model")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", no_model
+    )
+    args = ["update", str(repo), "--index-only", "--no-workspace", "--no-agents"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        repaired = [
+            dict(r)
+            for r in db.execute(
+                "SELECT * FROM wiki_pages WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids
+            )
+        ]
+        assert len(repaired) == 25
+        assert all(
+            json.loads(r["metadata_json"])["render_key"] != "old-retained-key" for r in repaired
+        )
+        assert all(r["freshness_status"] == "fresh" for r in repaired)
+        for page_id in retired_ids:
+            assert db.execute("SELECT id FROM wiki_pages WHERE id=?", (page_id,)).fetchone() is None
+        assert (
+            db.execute(
+                "SELECT freshness_status FROM wiki_pages WHERE id=?", (tombstone_id,)
+            ).fetchone()[0]
+            == "tombstone"
+        )
+        kept = dict(db.execute("SELECT * FROM wiki_pages WHERE id=?", (model["id"],)).fetchone())
+        for field in (
+            "content",
+            "digest",
+            "provider_name",
+            "model_name",
+            "created_at",
+            "updated_at",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+        ):
+            assert kept[field] == model[field]
+    assert _idle_stale_renderer_paths(repo) == []
+    store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+    vector_ids = run_async(store.list_page_ids())
+    run_async(store.close())
+    assert not set(retired_ids) & vector_ids
+    assert set(ids) <= vector_ids
+    assert model["id"] in vector_ids
+    assert json.loads((repo / ".repowise/state.json").read_text()).get(
+        "last_docs_commit"
+    ) == state_before.get("last_docs_commit")
+    assert {p.name: p.read_bytes() for p in repo.glob("*.py")} == sources_before
+    release_update_lock(repo)
+    clear_update_queued(repo)
+    following = CliRunner().invoke(cli, args)
+    assert following.exit_code == 0, following.output
+    assert "Already up to date" in following.output
 
 
 def test_scoped_repair_refreshes_existing_spotlight_outside_subset_rank_only(

@@ -754,20 +754,41 @@ class _GenerationRun:
                             if self.on_embed is not None:
                                 self.on_embed(len(embed_items), True)
                         except Exception as e:
-                            self.gen.embed_failed_pages += len(embed_items)
-                            log.warning(
-                                "rag.embed_batch_failed",
-                                level=level,
-                                count=len(embed_items),
-                                error=str(e),
-                                hint="semantic search will miss these pages; run `repowise reindex` to repair",
-                            )
-                            if self.on_warning is not None:
-                                self.on_warning(
-                                    f"Embedding failed for {len(embed_items)} page(s) "
-                                    f"({type(e).__name__}: {e}) — semantic search will "
-                                    "miss them; run `repowise reindex` to repair."
+                            from ...persistence.vector_store import BatchEmbeddingError
+
+                            # The store identifies exactly which chunks did not
+                            # commit. Retry those once, never bill/write successful
+                            # chunks again or guess a subset from a generic error.
+                            failed_items = embed_items
+                            if isinstance(e, BatchEmbeddingError):
+                                failed_items = list(e.failed_items)
+                                try:
+                                    await self.vector_store.embed_batch(failed_items)
+                                except Exception as retry_error:
+                                    e = retry_error
+                                    if isinstance(retry_error, BatchEmbeddingError):
+                                        failed_items = list(retry_error.failed_items)
+                                else:
+                                    failed_items = []
+                                    if self.on_embed is not None:
+                                        self.on_embed(len(embed_items), True)
+                            if failed_items:
+                                failed_ids = [item[0] for item in failed_items]
+                                self.gen.embed_failed_pages += len(failed_items)
+                                log.warning(
+                                    "rag.embed_batch_failed",
+                                    level=level,
+                                    count=len(failed_items),
+                                    page_ids=failed_ids,
+                                    error=str(e),
+                                    hint="retry the failed operation after the embedding service recovers",
                                 )
+                                if self.on_warning is not None:
+                                    self.on_warning(
+                                        f"Embedding failed for {len(failed_items)} page(s) "
+                                        f"({type(e).__name__}: {e}) — semantic search is "
+                                        f"incomplete for IDs {failed_ids}; retry after recovery."
+                                    )
                 pages = [r for r in results if isinstance(r, GeneratedPage)]
                 with timed(self.timings, "generation.checkpoint"):
                     if self.job_system is not None and self.job_id is not None:

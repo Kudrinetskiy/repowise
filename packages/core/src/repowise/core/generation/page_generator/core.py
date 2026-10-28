@@ -283,7 +283,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         ``persisted_page_ids`` is the set of ids that already have a stored
         page row. On ``resume`` a page counts as done only when it is in both
         this set and the vector store; None trusts the vector store alone.
-        A non-resume scoped deterministic repair can supply SQL-verified live
+        A non-resume deterministic repair can supply SQL-verified live
         template spotlight ids here to refresh existing current symbols even
         below the subset's ranking cut. It never admits a new or absent id.
 

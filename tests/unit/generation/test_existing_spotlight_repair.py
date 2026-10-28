@@ -14,7 +14,7 @@ from repowise.core.generation.page_generator.orchestrate import _GenerationRun
         (True, False, True, True, ["first-native-match"]),
         (True, True, True, True, []),
         (False, False, True, True, []),
-        (True, False, False, True, []),
+        (True, False, False, True, ["first-native-match"]),
         (True, False, True, False, []),
     ],
 )

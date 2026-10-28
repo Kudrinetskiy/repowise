@@ -14,6 +14,8 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.generation.models import GeneratedPage
 from repowise.core.generation.page_generator.orchestrate import _GenerationRun
 
@@ -73,9 +75,7 @@ def _run_level(store) -> list[str]:
             return _page("reused.py", reused=True)
 
         run = _fake_run(store)
-        await _GenerationRun.run_level(
-            run, [("p1", fresh()), ("p2", reused())], level=2
-        )
+        await _GenerationRun.run_level(run, [("p1", fresh()), ("p2", reused())], level=2)
         return [pid for batch in store.batches for (pid, *_rest) in batch]
 
     return asyncio.run(_go())
@@ -101,6 +101,61 @@ class _FailingStore:
 
     async def embed_batch(self, items):
         raise AttributeError("module 'lancedb' has no attribute 'connect_async'")
+
+
+@pytest.mark.parametrize(
+    ("recovery", "failed_count"), [("success", 0), ("partial", 1), ("outage", 2)]
+)
+@pytest.mark.parametrize("stage", ["embedding", "persistence"])
+def test_partial_batch_retries_only_failed_ids_once(recovery, failed_count, stage) -> None:
+    from repowise.core.persistence.vector_store import BatchChunkFailure, BatchEmbeddingError
+
+    class PartialStore(_RecordingStore):
+        async def embed_batch(self, items):
+            self.batches.append(list(items))
+            if len(self.batches) == 1:
+                failed = items[1:]
+            elif recovery == "success":
+                return
+            elif recovery == "partial":
+                failed = items[1:]
+            else:
+                failed = items
+            raise BatchEmbeddingError(
+                failures=[
+                    BatchChunkFailure(tuple(failed), stage, RuntimeError("service unavailable"))
+                ],
+                total_items=len(items),
+            )
+
+    store = PartialStore(persists=True)
+    warnings = []
+    gen = SimpleNamespace(embed_failed_pages=0)
+
+    async def go():
+        async def page(page_id):
+            return _page(page_id)
+
+        run = _fake_run(store)
+        run.gen = gen
+        run.on_warning = warnings.append
+        await _GenerationRun.run_level(
+            run, [(pid, page(pid)) for pid in ("ok.py", "retry.py", "last.py")], level=2
+        )
+
+    asyncio.run(go())
+    assert [[item[0] for item in batch] for batch in store.batches] == [
+        ["ok.py", "retry.py", "last.py"],
+        ["retry.py", "last.py"],
+    ]
+    assert gen.embed_failed_pages == failed_count
+    if failed_count:
+        assert len(warnings) == 1
+        assert "last.py" in warnings[0]
+        assert ("retry.py" in warnings[0]) == (failed_count == 2)
+        assert "ok.py" not in warnings[0]
+    else:
+        assert warnings == []
 
 
 def test_a_failed_embed_is_counted_on_the_generator() -> None:
