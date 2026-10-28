@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `cb740cd6341ffa849f6179723d7f2dd3ebab4db7`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `cf1a718d6a110a100b59119f9194355feebd46ed`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -60,7 +60,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@cb740cd6341ffa849f6179723d7f2dd3ebab4db7"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@cf1a718d6a110a100b59119f9194355feebd46ed"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -199,6 +199,8 @@ repowise update /path/to/repository --no-workspace --no-agents \
 В 0.59 Coordinator считает все SQL-страницы, включая tombstones. После правильного удаления их векторов его raw drift может остаться ненулевым; это не опровергает доказанное точное совпадение eligible ID sets. Сообщить буквальный WARN/FAIL отдельно и объяснить популяции, не удалять SQL-историю и не перестраивать здоровый vector store ради нулевого счётчика. Равные raw counts тоже не доказывают равенства ID sets.
 
 Для structural-only результата требуется отсутствие нерешённых stale structural pages в согласованном repair scope, не глобальный ноль stale pages. Сохранённую stale model-written concept prose перечислить отдельно без регенерации: её наличие не разрешает generate и не превращает успешный structural refresh в незавершённый structural repair. Все doctor warnings/failures по-прежнему разобрать и сообщить; такой результат не означает полностью чистую wiki или безусловный PASS всего doctor.
+
+Если выбраны pages старого renderer, отдельно подтвердить актуальность их metadata.render_key относительно текущего renderer и сохранённых indexed subject hashes. Freshness=fresh, совпавший глобальный fingerprint и старые timestamps не доказывают исполнения выбранного refresh. Pinned fork передаёт эту работу в structural repair и проверяет текущий подписанный parse cache перед idle-выходом, не читая source-only WIP. Диагностика отсутствующего, повреждённого, слишком большого или небезопасного кеша означает неизвестный результат проверки, не PASS. При несовпадении ключей сначала read-only диагноз; не продвигать markers вручную, не менять docs_mode и не запускать generate/reindex. После исправления причины и согласования recovery scope используется тот же Recipe 1A с --index-only.
 
 Для generate/restyle exact .repowise/jobs/<ID>.json — основной execution record. Выбирать checkpoint по emitted ID либо repo/provider/model/UTC/plan, а не только по newest. SQL generation_jobs может описывать другой cli_update.
 

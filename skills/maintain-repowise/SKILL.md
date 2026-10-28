@@ -32,7 +32,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `cb740cd6341ffa849f6179723d7f2dd3ebab4db7`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `cf1a718d6a110a100b59119f9194355feebd46ed`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
 ### Target 0.59 contracts
 
@@ -298,6 +298,7 @@ Do not run another `generate`, `restyle`, `update`, `reindex`, hook, or repair c
 ## Interpret status and doctor literally
 
 - `Last sync commit = HEAD`, `0 stale`, and `Drift=0.0%` prove their individual checks only.
+- When an update selects older-renderer pages, verify those structural pages' stored `metadata.render_key` against the current renderer and their indexed subject hashes. A global renderer fingerprint, unchanged timestamps or `freshness_status=fresh` do not establish that selected work ran. The pinned fork carries these paths into structural repair and checks the current authenticated parse cache before an idle exit, without reading source-only WIP. Missing, corrupt, oversized or unsafe-cache diagnostics mean the check is unverified, not successful. On a mismatch, stop mutations and diagnose the repair route; do not force markers, change docs mode, generate prose or reindex. After the cause is fixed and the recovery scope approved, Recipe 1A remains the no-model recovery command.
 - RepoWise 0.59's coordinator counter counts all SQL pages, including tombstones, rather than the eligible search population. Its raw drift can therefore remain nonzero after a correct tombstone-vector cleanup. Report that literal check separately and prove exact eligible SQL/vector/FTS ID consistency; never delete SQL history or rebuild healthy vectors merely to force the raw counter to zero. A zero raw count drift can also hide equal-sized but different ID sets.
 - Exit code zero does not prove that all doctor checks passed.
 - Use current full `doctor --format json`: inspect every structured check status/details and preserve exit code. Warnings and failures are distinct; classify each warning. Old table phrases such as `All checks passed!` are not a universal parser.
