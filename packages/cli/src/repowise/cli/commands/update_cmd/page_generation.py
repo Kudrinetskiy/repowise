@@ -142,7 +142,9 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
 
         # Snap the estimate to the real count so the bar ends at N of N.
         if progress.task is not None:
-            gen_progress.update(progress.task, total=progress.completed, completed=progress.completed)
+            gen_progress.update(
+                progress.task, total=progress.completed, completed=progress.completed
+            )
 
     docs.full_stats = {"embed_failed_pages": generator.embed_failed_pages}
     if checkpointer.failure:
@@ -179,6 +181,36 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
 
 def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     """Re-render stale structural pages from the full graph (no model calls)."""
+    from .deterministic import load_prior_page_ids, regenerate_deterministic_pages
+
+    generated_paths = {
+        page.target_path for page in docs.generated_pages if page.page_type == "file_page"
+    }
+    extra_paths = [path for path in run.structural_refresh_paths if path not in generated_paths]
+    if extra_paths:
+        with timed(run.timings, "render.files"):
+            structural_pages = regenerate_deterministic_pages(
+                repo_path=run.repo_path,
+                parsed_files=run.parsed_files,
+                source_map=run.source_map,
+                graph_builder=run.graph_builder,
+                repo_structure=run.repo_structure,
+                git_meta_map=run.git_meta_map,
+                regenerate_paths=extra_paths,
+                cfg=run.cfg,
+                concurrency=opts.concurrency,
+                degraded=run.degraded,
+                dead_code_report=run.dead_code_report,
+                prior_page_ids=load_prior_page_ids(run.repo_path),
+                stats_out=docs.full_stats,
+            )
+        docs.generated_pages.extend(structural_pages)
+        generated_paths.update(
+            page.target_path for page in structural_pages if page.page_type == "file_page"
+        )
+    run.unresolved_structural_paths = [
+        path for path in run.structural_refresh_paths if path not in generated_paths
+    ]
     if not run.stale_deterministic_ids or run.config.generation_changed:
         return
     from .deterministic import regenerate_deterministic_page_ids

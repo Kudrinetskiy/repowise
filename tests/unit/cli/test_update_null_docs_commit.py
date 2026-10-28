@@ -102,3 +102,39 @@ def test_update_recovers_a_store_whose_docs_pointer_is_null(repo: Path, monkeypa
     result = CliRunner().invoke(cli, ["update", "--no-workspace", "--docs", str(repo)])
 
     assert "No previous sync found" not in (result.output or "")
+
+
+@pytest.mark.parametrize("mode_flag", ["--index-only", "--no-docs"])
+@pytest.mark.parametrize("pointer_kind", ["null", "missing"])
+def test_explicit_structural_update_preserves_unset_docs_pointer(
+    repo: Path, monkeypatch, mode_flag: str, pointer_kind: str
+) -> None:
+    """Opting out of docs must not claim a formerly undocumented commit range."""
+    from click.testing import CliRunner
+
+    from repowise.cli.helpers import load_state, save_state
+    from repowise.cli.main import cli
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    (repo / ".repowise").mkdir()
+    state = {
+        "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
+        "docs_mode": "llm",
+        "store_format_version": 2,
+    }
+    if pointer_kind == "null":
+        state["last_docs_commit"] = None
+    save_state(repo, state)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "second")
+
+    result = CliRunner().invoke(
+        cli, ["update", "--no-workspace", "--no-agents", mode_flag, str(repo)]
+    )
+
+    assert result.exit_code == 0, result.output
+    updated = load_state(repo)
+    assert updated["last_sync_commit"] == _git(repo, "rev-parse", "HEAD")
+    assert ("last_docs_commit" in updated) == ("last_docs_commit" in state)
+    assert updated.get("last_docs_commit") is None

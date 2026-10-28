@@ -86,6 +86,8 @@ class UpdateRun:
     git_meta_map: Any = None
     cascade_budget: int | None = None
     affected: Any = None
+    structural_refresh_paths: list[str] = field(default_factory=list)
+    unresolved_structural_paths: list[str] = field(default_factory=list)
     partial_health_report: Any = None
     dead_code_report: Any = None
     doc_drift_report: Any = None

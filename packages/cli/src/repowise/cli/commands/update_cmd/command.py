@@ -94,6 +94,7 @@ from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
 
+
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
 ) -> None:
@@ -503,9 +504,7 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print(
-        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
-    )
+    console.print(f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]")
     console.print(
         "  Documentation for the whole repository: written by the model after a cost "
         "preview, or built from code when no model is configured. Completed stages "
@@ -699,8 +698,7 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
         return _full_upgrade(opts, run)
     if opts.full:
         raise reasoned_error(
-            "--full upgrades one repo at a time. Run it inside that repo, or pass "
-            "--repo <alias>.",
+            "--full upgrades one repo at a time. Run it inside that repo, or pass --repo <alias>.",
             reason="full_needs_one_repo",
         )
     with _errors_reported(run):
@@ -931,16 +929,13 @@ def _assess_staleness(run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; "
-            "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         from repowise.core.persistence import load_stale_update_targets
 
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(run.repo_path)
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -1053,9 +1048,7 @@ def _detect_changes(run: UpdateRun) -> None:
     if not run.git_is_current:
         from repowise.core.persistence import load_stale_update_targets
 
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(run.repo_path)
 
     # A stale page whose file is gone goes through the deletion path.
     if run.stale_db_paths:
@@ -1350,6 +1343,9 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     run.timings.stop("plan_pages")
     _add_stale_pages(run, stale_renderer_paths)
     _widen_for_full_render(run)
+    run.structural_refresh_paths = list(
+        dict.fromkeys([*run.stale_db_paths, *run.affected.decay_only])
+    )
     _report_page_plan(run)
 
 
@@ -1540,17 +1536,23 @@ class _TemplatePages:
     render_stats: dict[str, int] = field(default_factory=dict)
     # False after a failed renderer-driven render: keep the old stamp and pages.
     renderer_render_ok: bool = True
+    preserved_page_ids: set[str] = field(default_factory=set)
 
 
 def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
     pages = _TemplatePages(docs_mode=docs_mode, renderer_render_ok=docs_mode != "llm")
-    if pages.docs_mode == "deterministic":
+    if (
+        pages.docs_mode == "deterministic"
+        or run.structural_refresh_paths
+        or run.stale_deterministic_ids
+        or run.renderer_changed
+    ):
         _render_template_pages(opts, run, pages)
     _stage(run, "persist")
     with _errors_reported(run):
-        _persist_index_only(run, pages)
+        _persist_index_only(opts, run, pages)
     repo_path = run.repo_path
     _finish_outcome(repo_path, opts.agents_md, run.degraded)
     consume_update_pending(repo_path, run.head)
@@ -1579,12 +1581,14 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePages) -> None:
     from .deterministic import (
+        load_model_page_ids,
         load_prior_page_ids,
         persist_deterministic_pages,
     )
 
     _stage(run, "generate")
     prior_ids = load_prior_page_ids(run.repo_path)
+    out.preserved_page_ids = load_model_page_ids(run.repo_path)
     full_scope = run.config.generation_changed or run.renderer_changed
 
     degraded = run.degraded
@@ -1600,18 +1604,39 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
             "fingerprint was retained so the next update retries."
         )
 
-    if out.pages:
+    expected_paths = (
+        list(dict.fromkeys([*run.affected.regenerate, *run.structural_refresh_paths]))
+        if out.docs_mode == "deterministic" or run.renderer_changed
+        else run.structural_refresh_paths
+    )
+    rendered_paths = {page.target_path for page in out.pages if page.page_type == "file_page"}
+    unresolved_paths = [path for path in expected_paths if path not in rendered_paths]
+    persistence_ok = True
+    try:
         # Its own session, so its own timing row.
         with timed(run.timings, "render.persist"):
             run.state["total_pages"] = persist_deterministic_pages(
                 repo_path=run.repo_path,
                 generated_pages=out.pages,
                 # Cascade-reached pages the render did not touch.
-                decay_paths=run.affected.decay_only,
+                decay_paths=unresolved_paths,
                 degraded=degraded,
             )
-        if run.head:
-            run.state["last_docs_commit"] = run.head
+    except Exception as exc:
+        if run.config.rebuild_required:
+            raise
+        persistence_ok = False
+        out.renderer_render_ok = False
+        degraded.append(f"Template page persistence: {exc}")
+    if (
+        persistence_ok
+        and out.pages
+        and not unresolved_paths
+        and run.head
+        and not (opts.index_only or opts.docs_flag is False)
+    ):
+        run.state["last_docs_commit"] = run.head
+    if persistence_ok and out.pages:
         console.print(
             f"  [green]✓[/green] Rebuilt [bold]{len(out.pages):,}[/bold] "
             "documentation pages from code"
@@ -1633,7 +1658,11 @@ def _render_template_page_set(
         graph_builder=run.graph_builder,
         repo_structure=run.repo_structure,
         git_meta_map=run.git_meta_map,
-        regenerate_paths=run.affected.regenerate,
+        regenerate_paths=(
+            list(dict.fromkeys([*run.affected.regenerate, *run.structural_refresh_paths]))
+            if out.docs_mode == "deterministic" or run.renderer_changed
+            else run.structural_refresh_paths
+        ),
         cfg=run.cfg,
         concurrency=opts.concurrency,
         degraded=run.degraded,
@@ -1663,7 +1692,7 @@ def _render_template_page_set(
     return pages
 
 
-def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
+def _persist_index_only(opts: UpdateOptions, run: UpdateRun, pages: _TemplatePages) -> None:
     config = run.config
     template_wiki = pages.docs_mode == "deterministic"
     persisted_changed_paths = (
@@ -1691,6 +1720,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         # The repo's docs mode, not this run's page count.
         template_wiki=template_wiki,
         pages_rendered=len(pages.pages),
+        preserve_docs_pointer=opts.index_only or opts.docs_flag is False,
         git_decay_map=run.git_decay_map,
         exclude_patterns=run.exclude_patterns,
         head_ts=run.head_ts,
@@ -1732,7 +1762,7 @@ def _full_generation_page_ids(
         run.renderer_changed and pages.renderer_render_ok
     )
     if template_wiki and full_render:
-        return {page.page_id for page in pages.pages}
+        return {page.page_id for page in pages.pages} | pages.preserved_page_ids
     return None
 
 
@@ -1890,7 +1920,12 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             knowledge_graph_result=run.knowledge_graph_result,
             degraded=run.degraded,
             doc_drift_report=run.doc_drift_report,
-            decay_paths=run.affected.decay_only,
+            # 0.59's cascade excludes generated ids itself, so retain its
+            # seeds even after repairing a file: dependent model prose still
+            # needs to become stale without being rewritten.
+            decay_paths=list(
+                dict.fromkeys([*run.affected.decay_only, *run.unresolved_structural_paths])
+            ),
             parsed_files=run.parsed_files,
             source_map=run.source_map,
             git_decay_map=run.git_decay_map,
@@ -2035,7 +2070,7 @@ def _report_docs_outcome(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) ->
         )
     show_full_completion(
         generated_pages=docs.generated_pages,
-        decay_count=len(run.affected.decay_only),
+        decay_count=len(run.unresolved_structural_paths),
         decisions_changed=(
             len(docs.new_decision_markers) + len(docs.session_decisions) + docs.decisions_evolved
         ),
@@ -2171,7 +2206,15 @@ def run_update(
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)
-    if run.index_only:
+    stale_only = (
+        bool(run.stale_db_paths or run.stale_deterministic_ids)
+        and not run.file_diffs
+        and not run.config.changed
+        and not run.renderer_changed
+        and not run.analyzer_changed
+        and not run.extraction_changed
+    )
+    if run.index_only or stale_only:
         return _index_only_update(opts, run)
 
     return _docs_update(opts, run)

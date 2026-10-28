@@ -77,6 +77,29 @@ async def _load_prior_page_ids(repo_path: Path) -> dict:
         await engine.dispose()
 
 
+def load_model_page_ids(repo_path: Path) -> set[str]:
+    """Stored prose is not a template refresh target, irrespective of saved mode."""
+    return run_async(_load_model_page_ids(repo_path))
+
+
+async def _load_model_page_ids(repo_path: Path) -> set[str]:
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                select(Page.id).where(Page.provider_name.not_in(["template", ""]))
+            )
+            return set(rows.scalars())
+    finally:
+        await engine.dispose()
+
+
 def regenerate_deterministic_pages(
     *,
     repo_path: Path,
@@ -219,6 +242,25 @@ def _render_pages(
         return []
 
     try:
+        from repowise.core.generation.models import compute_page_id
+
+        model_ids = load_model_page_ids(repo_path)
+        if not complete_context or model_ids:
+            file_ids = {compute_page_id("file_page", path) for path in regenerate_paths}
+            spotlight_ids = {
+                compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{symbol.name}")
+                for pf in affected_parsed
+                for symbol in pf.symbols
+            }
+        if not complete_context:
+            # Explicit repair intent survives significance and near-clone selection.
+            only_page_ids = file_ids | spotlight_ids
+        if model_ids:
+            # A structural opt-out never rewrites stored prose or its vectors.
+            # Existing template chapters remain refreshable from the complete view.
+            if only_page_ids is None:
+                only_page_ids = set(prior_page_ids or {}) | file_ids | spotlight_ids
+            only_page_ids -= model_ids
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
@@ -247,6 +289,7 @@ def _render_pages(
                 )
             except Exception as exc:  # embedding is optional; FTS still indexes
                 degraded.append(f"Page embedding: {exc}")
+                return []
 
         generator = PageGenerator(
             TemplateProvider(),
@@ -283,6 +326,8 @@ def _render_pages(
             stats_out["embed_failed_pages"] = (
                 stats_out.get("embed_failed_pages", 0) + generator.embed_failed_pages
             )
+        if generator.embed_failed_pages:
+            return []
         return pages
     except Exception as exc:
         degraded.append(f"{degrade_label}: {exc}")
@@ -395,6 +440,16 @@ async def _persist_async(
             await fts.index_pages(generated_pages)
         except Exception as exc:
             degraded.append(f"Full-text index: {exc}")
+            try:
+                from repowise.core.pipeline.persist import mark_page_ids_stale
+
+                async with get_session(sf) as session:
+                    await mark_page_ids_stale(
+                        session, repo_id, [page.page_id for page in generated_pages]
+                    )
+            except Exception as stale_exc:
+                degraded.append(f"Freshness rollback: {stale_exc}")
+            raise
     finally:
         await engine.dispose()
     return total

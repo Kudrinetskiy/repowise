@@ -36,7 +36,6 @@ from .incremental import _build_repo_graph
 log = structlog.get_logger(__name__)
 
 
-
 def backfill_docs_pointer(new_state: dict, state: dict) -> None:
     """Carry ``last_sync_commit`` onto a docs pointer that never got one.
 
@@ -369,7 +368,12 @@ def resolve_repair_base(
         )
 
     try:
-        if _git("merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref).returncode != 0:
+        if (
+            _git(
+                "merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref
+            ).returncode
+            != 0
+        ):
             # Non-zero covers both "not an ancestor" (rebased, force-pushed,
             # branch switched) and "cannot resolve that object" (gc'd, or a
             # shallow clone that never fetched it), and git does not
@@ -378,7 +382,9 @@ def resolve_repair_base(
                 f"the recorded commit {from_commit[:8]} is not an ancestor of this "
                 "branch's history, or is not present in this clone"
             )
-        counted = _git("rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}")
+        counted = _git(
+            "rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}"
+        )
         if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
             return base_ref, (
                 f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
@@ -594,6 +600,7 @@ def _persist_index_only_update(
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
     template_wiki: bool = False,
+    preserve_docs_pointer: bool = False,
     git_decay_map: dict | None = None,
     exclude_patterns: list[str] | None = None,
     head_ts: float | None = None,
@@ -716,7 +723,8 @@ def _persist_index_only_update(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
         )
-    backfill_docs_pointer(new_state, state)
+    if not preserve_docs_pointer:
+        backfill_docs_pointer(new_state, state)
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -1488,6 +1496,8 @@ async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: lis
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
-            await SecurityScanner(session, repo.id).replace_findings(findings_by_file, scanned_paths)
+            await SecurityScanner(session, repo.id).replace_findings(
+                findings_by_file, scanned_paths
+            )
     finally:
         await engine.dispose()
