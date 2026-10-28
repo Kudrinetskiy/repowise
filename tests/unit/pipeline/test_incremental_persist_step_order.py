@@ -108,9 +108,9 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert failed_steps == []
     # The incremental path only drains the retired code_comment source.
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == ["code_comment"]
-    # Tombstones and swept pages leave FTS; only tombstones leave the vectors.
+    # Both stores must remove tombstones and swept pages, without re-embedding.
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
-    assert rec.args_of("vectors.delete_many") == [(([TOMBSTONED],), {})]
+    assert rec.args_of("vectors.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
     assert git_kwargs == {"keep_commit_health": True}
 

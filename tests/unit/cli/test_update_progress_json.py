@@ -298,9 +298,7 @@ class TestRunUpdateSequence:
                     {"last_sync_commit": "deadbeef", "docs_mode": "none", **CURRENT_GIT_HISTORY},
                     f,
                 )
-            result = runner.invoke(
-                cli, ["update", td, "--since", "deadbeef", "--progress", "json"]
-            )
+            result = runner.invoke(cli, ["update", td, "--since", "deadbeef", "--progress", "json"])
 
         assert result.exit_code == 0, result.output
         assert [e["event"] for e in _events(result)] == ["start", "stage", "done"]
@@ -331,6 +329,7 @@ class TestRunUpdateSequence:
             ("stage", "detect_changes"),
             ("stage", "rebuild_graph"),
             ("stage", "plan_pages"),
+            ("stage", "generate"),
             ("stage", "persist"),
             ("done", None),
         ]
