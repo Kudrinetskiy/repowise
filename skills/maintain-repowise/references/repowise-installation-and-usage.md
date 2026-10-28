@@ -196,6 +196,8 @@ repowise update /path/to/repository --no-workspace --no-agents \
 
 Требуемые критерии установить для операции: exact sync HEAD, eligible SQL/vector/FTS sets и drift, stale state, docs pointer/prose preservation или scope-written output, фактический MCP smoke при наличии регистрации. Raw wiki_pages count не равен eligible search set; excluded/below-floor/tombstone строки не должны провоцировать лишний reindex.
 
+В 0.59 Coordinator считает все SQL-страницы, включая tombstones. После правильного удаления их векторов его raw drift может остаться ненулевым; это не опровергает доказанное точное совпадение eligible ID sets. Сообщить буквальный WARN/FAIL отдельно и объяснить популяции, не удалять SQL-историю и не перестраивать здоровый vector store ради нулевого счётчика. Равные raw counts тоже не доказывают равенства ID sets.
+
 Для structural-only результата требуется отсутствие нерешённых stale structural pages в согласованном repair scope, не глобальный ноль stale pages. Сохранённую stale model-written concept prose перечислить отдельно без регенерации: её наличие не разрешает generate и не превращает успешный structural refresh в незавершённый structural repair. Все doctor warnings/failures по-прежнему разобрать и сообщить; такой результат не означает полностью чистую wiki или безусловный PASS всего doctor.
 
 Для generate/restyle exact .repowise/jobs/<ID>.json — основной execution record. Выбирать checkpoint по emitted ID либо repo/provider/model/UTC/plan, а не только по newest. SQL generation_jobs может описывать другой cli_update.
@@ -214,7 +216,9 @@ Reindex не пишет prose, но пишет embeddings и может вызв
 
 При diagnosed missing vectors с тем же embedder/model можно согласовать reindex . --embedder <EMBEDDER>. Если явно доказана memory/timeout проблема, меньший --batch-size допустим после классификации причины, не бесконечный retry.
 
-При orphaned/damaged store либо утверждённой смене embedder/model согласовать recoverable vector-store backup вне repo и clean reindex (Recipe 11B). Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
+Если все orphan IDs — SQL template file_page tombstones и их target отсутствует одновременно в живом дереве (включая symlinks), HEAD и Git index, применим точечный Recipe 11C без reindex. Нужны отдельное разрешение на exact IDs, остановленные writers/MCP и preview receipt проверенного helper из scripts/cleanup_tombstone_vectors.py. Apply повторно проверяет root/HEAD/полный vector-ID fingerprint и весь допустимый набор, затем удаляет только утверждённые векторы. Никаких SQL/source/prose/state изменений или embeddings; после операции — точное равенство оставшихся IDs и полный doctor/preservation audit. Смешанный набор, отсутствующая SQL-строка, model-written/другой тип страницы, существующий файл или изменённые inputs блокируют этот рецепт. Одобрение одного набора не распространяется автоматически на другие repo.
+
+Для остальных diagnosed orphaned/damaged store либо утверждённой смены embedder/model отдельно согласовать recoverable vector-store backup вне repo и clean reindex (Recipe 11B). Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
 
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 

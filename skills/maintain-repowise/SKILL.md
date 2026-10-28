@@ -28,6 +28,9 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<STYLE>`: `comprehensive`, `caveman`, `reference`, or `tutorial`.
 - `<BACKUP_PATH>`: explicit backup destination outside `<REPO_ROOT>`.
 - `<VECTOR_BACKUP_PATH>`: explicit backup destination for the current `.repowise/lancedb`, outside `<REPO_ROOT>` and not already present.
+- `<RUNTIME_PYTHON>`: verified Python interpreter of the approved RepoWise installation, with its dependencies; do not assume the system `python3` has them.
+- `<SKILL_ROOT>`: absolute path to this installed skill directory.
+- `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
 Never paste unresolved placeholders. Target: patched `0.59.0` at `cb740cd6341ffa849f6179723d7f2dd3ebab4db7`. This runtime pin names the tested code commit; `main` may additionally contain documentation-only commits. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
@@ -295,6 +298,7 @@ Do not run another `generate`, `restyle`, `update`, `reindex`, hook, or repair c
 ## Interpret status and doctor literally
 
 - `Last sync commit = HEAD`, `0 stale`, and `Drift=0.0%` prove their individual checks only.
+- RepoWise 0.59's coordinator counter counts all SQL pages, including tombstones, rather than the eligible search population. Its raw drift can therefore remain nonzero after a correct tombstone-vector cleanup. Report that literal check separately and prove exact eligible SQL/vector/FTS ID consistency; never delete SQL history or rebuild healthy vectors merely to force the raw counter to zero. A zero raw count drift can also hide equal-sized but different ID sets.
 - Exit code zero does not prove that all doctor checks passed.
 - Use current full `doctor --format json`: inspect every structured check status/details and preserve exit code. Warnings and failures are distinct; classify each warning. Old table phrases such as `All checks passed!` are not a universal parser.
 - `doctor --quick` skips MCP smoke and vector/FTS reconciliation; it cannot close those criteria. Full JSON exits 1 for failed checks; a warning is not automatically a failure or permission to repair.
@@ -398,7 +402,7 @@ git rev-parse HEAD
 git status --short -- AGENTS.md
 ```
 
-Confirm `Last sync commit` equals HEAD, no approved structural repairs remain stale, drift is 0.0%, and `AGENTS.md` did not change. Report preserved stale concept prose separately without generating it. Classify the timestamp query by page type; structural rows are not LLM prose. Do not report concept prose as refreshed. Apply the full structured doctor gate above; classify every warn/fail separately.
+Confirm `Last sync commit` equals HEAD, no approved structural repairs remain stale, eligible SQL/vector/FTS ID sets agree, and `AGENTS.md` did not change. Report the raw coordinator check and preserved stale concept prose separately without generating it. Classify the timestamp query by page type; structural rows are not LLM prose. Do not report concept prose as refreshed. Apply the full structured doctor gate above; classify every warn/fail separately.
 
 ## Recipe 1A: Explicit structural-only update
 
@@ -424,7 +428,7 @@ git rev-parse HEAD
 git status --short -- AGENTS.md
 ```
 
-Confirm `Last sync commit` equals HEAD, no approved structural repairs remain stale, drift is 0.0%, and `AGENTS.md` did not change. Report preserved stale concept prose separately; this recipe does not authorize its generation or require a global zero-stale count.
+Confirm `Last sync commit` equals HEAD, no approved structural repairs remain stale, eligible SQL/vector/FTS ID sets agree, and `AGENTS.md` did not change. Report the raw coordinator check and preserved stale concept prose separately; this recipe does not authorize its generation or require a global zero-stale count.
 
 ## Recipe 1B: Single-repository fast-to-full upgrade
 
@@ -997,7 +1001,7 @@ Then run Recipe 8's common `status`, full `doctor`, HEAD, and pre-existing-artif
 
 **When to use:** `repowise doctor` reports genuine eligible-set vector drift, semantic search misses an eligible page present in SQL/FTS, embedding failed during generation, the vector store was lost or damaged, or the configured embedder / embedding model changed. Compare eligible SQL search IDs, not all stored rows: intentional excluded/below-floor rows do not require vectors. If eligible SQL/vector/FTS sets are synchronized with zero drift, a raw-count difference alone requires no reindex or repair.
 
-**Why:** `reindex` reads the existing SQL wiki and writes embeddings without calling the documentation LLM, regenerating prose, or modifying Git. Inspect current reindex behavior and eligible ID sets before choosing a repair; embedder/model transitions need separate authorization.
+**Why:** Choose the repair from exact ID sets. `reindex` writes embeddings without calling the documentation LLM or modifying Git; the narrowly guarded Recipe 11C only removes confirmed obsolete vectors without rebuilding. Embedder/model transitions and each destructive cleanup scope require separate applicable authorization.
 
 Run the read-only precheck first:
 
@@ -1033,7 +1037,7 @@ repowise reindex . \
 
 ### 11B: Orphaned vectors or embedder/model change — clean reindex
 
-Use a clean reindex when `doctor` reports any orphaned vectors **or** when intentionally changing the embedder/model (including `mock` to Ollama). Use a recoverable clean-store rebuild only for diagnosed orphaned vectors or an approved embedder/model transition, not for raw count differences. Obtain explicit approval, resolve `<VECTOR_BACKUP_PATH>`, and move the whole vector directory to a recoverable backup before rebuilding:
+Use a clean reindex for diagnosed orphaned/damaged stores that do not qualify for Recipe 11C, or when intentionally changing the embedder/model (including `mock` to Ollama). A rebuild is not required merely because a strictly proven tombstone vector can be removed by 11C. Obtain explicit approval for the recoverable clean-store rebuild, resolve `<VECTOR_BACKUP_PATH>`, and move the whole vector directory to a recoverable backup before rebuilding:
 
 ```bash
 cd <REPO_ROOT>
@@ -1052,6 +1056,32 @@ git status --short -- AGENTS.md
 Require synchronized eligible SQL/Vector sets, `0 orphaned`, and `Drift=0.0%`. Keep `<VECTOR_BACKUP_PATH>` until those checks pass. If the clean reindex fails, leave the backup untouched, stop, and report the error before moving or deleting either vector directory.
 
 Do not regenerate model-written pages to repair vector drift. Do not run `doctor --repair` as a substitute: it may perform unrelated repairs. If a smaller-batch retry also fails, stop and report the embedder error; the SQL wiki remains the source for another clean reindex attempt.
+
+### 11C: Exact confirmed tombstone vectors — no reindex
+
+**When to use:** Full doctor reports zero missing vectors and diagnosed orphans, every orphan is backed by a SQL `template` `file_page` tombstone, every target is absent from the live filesystem (including symlinks), Git HEAD and Git index, and the user explicitly approved this exact deletion scope. A count match or `Drift=0.0%` alone does not establish ID consistency.
+
+**Why:** These search entries no longer represent current files. Removing only their exact vector IDs leaves SQL history, model-written prose, live vectors, decisions and settings intact; a full embedding rebuild is unnecessary. This is not generic orphan pruning: absent SQL rows, model-written rows, other page types, mixed orphan sets, present files or changed inputs must be diagnosed separately.
+
+Before preview/apply, quiesce all writers and MCP access to this index through the approved maintenance lifecycle. Capture the applicable source/prose/state preservation evidence. The helper uses read-only SQLite and the existing delete-only vector API; it never calls an embedder, creates a new store, deletes SQL rows or edits project files. The script does not support `--no-agents` because it never writes agent instructions.
+
+```bash
+<RUNTIME_PYTHON> <SKILL_ROOT>/scripts/cleanup_tombstone_vectors.py <REPO_ROOT> \
+  --preview > <CLEANUP_RECEIPT>
+```
+
+Require a successful exit and inspect the complete receipt: canonical root, HEAD, exact candidate IDs and count, and the complete prior vector-ID fingerprint. Match it to the user's approved scope; never approve by count alone. If inputs change, produce a new preview and obtain any needed approval instead of editing the receipt. A zero-candidate result needs no apply.
+
+After approval, apply that exact receipt:
+
+```bash
+<RUNTIME_PYTHON> <SKILL_ROOT>/scripts/cleanup_tombstone_vectors.py <REPO_ROOT> \
+  --apply <CLEANUP_RECEIPT>
+
+repowise doctor <REPO_ROOT> --format json
+```
+
+Apply revalidates the receipt and live eligibility before deleting. Require the resulting vector-ID set to equal the prior set minus only the approved IDs, then full doctor synchronization and unchanged source/WIP, prose/provenance, state/docs pointer and settings. On any failure, stop new mutations and preserve the exact outcome; do not retry blindly, expand the deletion set, reindex or run broad repair. Authorization for one repository's IDs does not automatically authorize cleanup in another repository.
 
 ## Recipe 12: Register and operate a multi-repo workspace
 
@@ -1178,7 +1208,7 @@ For model-written prose, run Recipe 2, 2A, 2B, 5, 6, or 8A against the selected 
 - Do not run `reindex` after every successful update or generation; use Recipe 11 only for observed vector drift, embedding failure, vector-store recovery, or an intentional embedder/model change.
 - Do not expect `init --no-prose` in RepoWise 0.59 to ask for an embedder. It is a non-interactive path: resolve the user's auto/explicit/mock policy before the run. Pass `--embedder ollama` and create an Ollama model entry only when the user selected them; otherwise preserve and verify the saved auto-selected embedder.
 - Current 0.59 `--no-editor-setup` covers machine registration, project editor files and post-commit hooks. Recipes retain explicit `--no-claude-md --no-agents --no-codex --no-distill-hook` as defense in depth; never enable hooks implicitly.
-- Do not assume orphan pruning without current implementation evidence. Use Recipe 11B with an external recoverable LanceDB backup.
+- Do not assume generic orphan pruning. Recipe 11C is only for its independently verified template-file tombstones and approved exact IDs; other diagnosed orphan/damaged-store cases require the separately approved Recipe 11B or another explicit recovery plan.
 - Do not treat `cost_usd: 0.0` as proof that Codex CLI was not called; verify generated page types and provider/model output.
 - Do not interpret aggregate `Generating pages`, `Pages updated`, job totals, or cumulative token counts as model-page evidence; query newly written `wiki_pages` after the captured UTC boundary and reconcile 0.59 unchanged IDs against prior content/hash and current native outcome evidence.
 - Never close store/MCP criteria with `doctor --quick`, selected OK rows, exit zero alone, or a historical final phrase; require current full structured checks.
