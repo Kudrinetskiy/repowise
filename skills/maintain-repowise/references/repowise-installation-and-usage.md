@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `035a12f1ab600286542b0f6e21d2db6242792178`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `6f3b53fbd3719a80bbfd82808e9f31a323717143`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -66,7 +66,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@035a12f1ab600286542b0f6e21d2db6242792178"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@6f3b53fbd3719a80bbfd82808e9f31a323717143"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -226,13 +226,13 @@ Partial result останавливает новые мутации, но не �
 
 Reindex не пишет prose, но пишет embeddings и может вызвать внешний API. Это отдельное разрешение. Не запускать его после каждого successful update и не ремонтировать raw-count разницу при совпадающих eligible sets.
 
-Перед выбором reindex проверить `.repowise/cleanup-debt.json` и исходную ошибку cleanup (Recipe 11D). Неудачное удаление swept SCC/symbol/file ID — не отсутствие embeddings. Fork умеет delete-only очистку и сохраняет точные неудачные `fts`/`vectors` ID, но обычный update при неизменных HEAD/config не гарантирует replay: idle-path долг не обрабатывает. Проверка повторного persistence pass не доказывает этот CLI-сценарий. Не обещать автоматический повтор, не редактировать/обнулять ledger и не вызывать delete API самостоятельно. Сопоставить exact debt с текущими SQL/FTS/vector sets и выяснить, какие IDs действительно устарели, не стали ли они снова live. Повреждённый/нечитаемый ledger — нерешённая диагностика, не пустая очередь и не повод для rebuild.
+Перед выбором reindex проверить `.repowise/cleanup-debt.json` и исходную ошибку cleanup (Recipe 11D). Неудачное удаление swept SCC/symbol/file ID — не отсутствие embeddings. В текущем pin отдельно одобренный обычный update обрабатывает сохранённый долг и при неизменных HEAD/config: single-repo, workspace, выбранный alias и workspace-docs. Очистка выполняется под update-lock, без генерации страниц/embeddings; SQL повторно проверяет ownership/freshness. Ожившая собственная страница отменяет старое намерение удаления, сохраняя поиск; чужие/неподдерживаемые IDs и повреждённый ledger блокируют очистку. При постоянном сбое IDs остаются в очереди, CLI сообщает ошибку без full-index fallback. Preview и занятая блокировка долг не очищают. После одобренного Recipe 1A/12C сопоставить exact debt и eligible SQL/FTS/vector sets, сохранить prose/docs-pointer; одного no-op сообщения недостаточно. Не редактировать/обнулять ledger и не вызывать delete API самостоятельно.
 
 При diagnosed missing vectors с тем же embedder/model можно согласовать reindex . --embedder <EMBEDDER>. Если явно доказана memory/timeout проблема, меньший --batch-size допустим после классификации причины, не бесконечный retry.
 
 Если все orphan IDs — SQL template file_page tombstones и их target отсутствует одновременно в живом дереве (включая symlinks), HEAD и Git index, применим точечный Recipe 11C без reindex. Нужны отдельное разрешение на exact IDs, остановленные writers/MCP и preview receipt проверенного helper из scripts/cleanup_tombstone_vectors.py. Apply повторно проверяет root/HEAD/полный vector-ID fingerprint и весь допустимый набор, затем удаляет только утверждённые векторы. Никаких SQL/source/prose/state изменений или embeddings; после операции — точное равенство оставшихся IDs и полный doctor/preservation audit. Смешанный набор, отсутствующая SQL-строка, model-written/другой тип страницы, существующий файл или изменённые inputs блокируют этот рецепт. Одобрение одного набора не распространяется автоматически на другие repo.
 
-Если нужен delete-only recovery сохранённого долга, отдельно согласовать и проверить такой маршрут. Несоответствия условиям 11C недостаточно для выбора полного reindex. Только после исключения узкой tombstone-очистки и deferred-delete ветки выбирать действительно обоснованный clean rebuild damaged/orphaned store либо утверждённую смену embedder/model (11B), с отдельным разрешением и recoverable vector-store backup вне repo. Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
+Для delete-only recovery сохранённого долга после диагностики отдельно согласовать обычный update по Recipe 1A/12C; force/full не нужны. Постоянная ошибка останавливает новые мутации, но не безопасные postchecks. Несоответствия условиям 11C недостаточно для выбора полного reindex. Только после исключения узкой tombstone-очистки и deferred-delete ветки выбирать действительно обоснованный clean rebuild damaged/orphaned store либо утверждённую смену embedder/model (11B), с отдельным разрешением и recoverable vector-store backup вне repo. Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
 
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 

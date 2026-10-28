@@ -32,7 +32,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `035a12f1ab600286542b0f6e21d2db6242792178`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `6f3b53fbd3719a80bbfd82808e9f31a323717143`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
 ### Target 0.59 contracts
 
@@ -1136,7 +1136,7 @@ Apply revalidates the receipt and live eligibility before deleting. Require the 
 
 **When to use:** A cleanup step failed, `.repowise/cleanup-debt.json` is nonempty/unreadable, or orphans correspond to a previously swept page such as an SCC/symbol rather than 11C's template file-page tombstones.
 
-**Why:** The pinned fork records exact failed `fts`/`vectors` deletions after SQL persistence and can retry them when the persistence path runs. That is not a missing-embedding problem. An unchanged-HEAD/config no-op update does **not** guarantee replay: its idle path does not consult/drain cleanup debt. Current regression evidence covers a repeated persistence pass, not that idle CLI route. This recipe is diagnosis only; it does not authorize another update, a ledger edit, delete API calls or a rebuild.
+**Why:** The pinned fork records exact failed `fts`/`vectors` deletions after SQL persistence. A separately approved ordinary update now replays that debt under the update lock even when HEAD/config are unchanged, through single-repo, workspace, selected-alias and workspace-docs routes. Replay revalidates SQL ownership and freshness: revived own pages cancel obsolete intent without deleting current search entries; foreign rows and unsupported IDs block cleanup. It does not regenerate pages or embeddings. Failed IDs remain queued and CLI reports failure without a full-index fallback. Preview and lock deferral do not delete or clear debt. Inspection alone does not authorize another update, ledger edits, direct delete APIs or a rebuild.
 
 Read the existing ledger without importing RepoWise or calling an embedder:
 
@@ -1167,7 +1167,7 @@ else:
 PY
 ```
 
-Keep the exact IDs, original degraded/error output and current SQL/FTS/vector identities as evidence; route long ID output through bounded host tools. Revalidate whether each ID is truly obsolete or is now live again. Missing/unreadable or empty debt is not proof of healthy stores. Report the required delete-only scope and request a separately approved, tested recovery route; do not invent a CLI flag or promise that an identical no-op update will drain it. 11C may be used only if all its own exact eligibility gates are independently satisfied. Choose 11B only when a rebuild is actually justified and explicitly approved. Pending nonempty debt remains a disclosed unresolved condition until its IDs are accounted for; never clear the file to manufacture success.
+Keep the exact IDs, original degraded/error output and current SQL/FTS/vector identities as evidence; route long ID output through bounded host tools. Revalidate whether each ID is obsolete or live again. Missing/unreadable or empty debt is not proof of healthy stores. Once the delete-only retry is approved and common identity/readability/write-boundary gates pass, use Recipe 1A for one concrete repository or Recipe 12C for the approved workspace selection; no force/full flag is needed. A dry-run previews selection but does not prove deletion. Require the queued IDs to be accounted for and eligible search sets synchronized afterward, with prose/docs-pointer preserved. A persistent failure stops further mutations, not read-only diagnostics. 11C still requires its own exact eligibility gates; 11B requires a justified, separately approved rebuild. Never clear the ledger manually to manufacture success.
 
 ## Recipe 12: Register and operate a multi-repo workspace
 
@@ -1297,7 +1297,7 @@ For model-written prose, run Recipe 2, 2A, 2B, 5, 6, or 8A against the selected 
 - Do not infer `<BASE_COMMIT>` from another task, branch, checkout, transcript, or worktree.
 - Do not run `doctor --repair` automatically.
 - Do not run `reindex` after every successful update or generation; use Recipe 11 only for observed vector drift, embedding failure, vector-store recovery, or an intentional embedder/model change.
-- Inspect cleanup-debt and prior swept-ID cleanup failures under 11D before selecting reindex. A same-HEAD no-op is not proof that deferred deletions ran; do not edit the ledger or force an unrelated update to drain it.
+- Inspect cleanup-debt and prior swept-ID cleanup failures under 11D before selecting reindex. This pin replays validated debt during an approved same-HEAD update, but a no-op message alone does not prove cleanup: reconcile ledger IDs and search stores. Do not edit the ledger or force an unrelated change.
 - Do not expect `init --no-prose` in RepoWise 0.59 to ask for an embedder. It is a non-interactive path: resolve the user's auto/explicit/mock policy before the run. Pass `--embedder ollama` and create an Ollama model entry only when the user selected them; otherwise preserve and verify the saved auto-selected embedder.
 - Current 0.59 `--no-editor-setup` covers machine registration, project editor files and post-commit hooks. Recipes retain explicit `--no-claude-md --no-agents --no-codex --no-distill-hook` as defense in depth; never enable hooks implicitly.
 - Do not assume generic orphan pruning. Recipe 11C is only for its independently verified template-file tombstones and approved exact IDs; other diagnosed orphan/damaged-store cases require the separately approved Recipe 11B or another explicit recovery plan.
