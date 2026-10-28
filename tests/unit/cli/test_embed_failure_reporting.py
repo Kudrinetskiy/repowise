@@ -275,8 +275,8 @@ def test_update_with_the_mock_embedder_is_not_failed(tmp_path):
     assert not (tmp_path / ".repowise" / "state.json").exists()
 
 
-def test_the_deterministic_update_render_records_a_failed_embed(tmp_path, monkeypatch):
-    """The index-only update passed no ``on_warning``, so nothing was recorded."""
+def test_the_deterministic_update_render_withholds_failed_embeddings(tmp_path, monkeypatch):
+    """Record failed embeddings without releasing failed repairs for persistence."""
     from repowise.cli.commands.update_cmd import deterministic
 
     class _Generator:
@@ -296,6 +296,9 @@ def test_the_deterministic_update_render_records_a_failed_embed(tmp_path, monkey
         lambda *a, **k: SimpleNamespace(language="en"),
     )
     monkeypatch.setattr("repowise.core.generation.ContextAssembler", lambda *a, **k: None)
+    # This reporting fixture has no persisted repository; isolate that lookup
+    # so an unrelated database error cannot masquerade as the intended failure.
+    monkeypatch.setattr(deterministic, "load_model_page_ids", lambda _repo: set())
     degraded: list[str] = []
     stats: dict[str, int] = {}
 
@@ -314,7 +317,7 @@ def test_the_deterministic_update_render_records_a_failed_embed(tmp_path, monkey
         stats_out=stats,
     )
 
-    assert pages == ["page"]
+    assert pages == []
     assert degraded == ["Embedding failed for 2 page(s)"]
     assert stats == {"embed_failed_pages": 2}
 
@@ -344,7 +347,11 @@ def test_reindex_clears_the_unavailable_stamp(tmp_path, monkeypatch):
     repowise_dir.mkdir()
     save_state(
         tmp_path,
-        {"index_scope": {"search": {"semantic": "unavailable", "next_command": "repowise reindex"}}},
+        {
+            "index_scope": {
+                "search": {"semantic": "unavailable", "next_command": "repowise reindex"}
+            }
+        },
     )
 
     async def _seed():
@@ -370,7 +377,9 @@ def test_reindex_clears_the_unavailable_stamp(tmp_path, monkeypatch):
 
     asyncio.run(_seed())
     monkeypatch.setattr(
-        reindex_cmd, "get_db_url_for_repo", lambda p: f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}"
+        reindex_cmd,
+        "get_db_url_for_repo",
+        lambda p: f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}",
     )
 
     asyncio.run(reindex_cmd._reindex(tmp_path, "openai", 8))
