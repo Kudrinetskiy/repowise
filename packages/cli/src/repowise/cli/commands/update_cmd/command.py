@@ -1627,7 +1627,7 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
             raise
         persistence_ok = False
         out.renderer_render_ok = False
-        degraded.append(f"Template page persistence: {exc}")
+        degraded.append(f"Structural page persistence: {exc}")
     if (
         persistence_ok
         and out.pages

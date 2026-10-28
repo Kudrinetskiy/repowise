@@ -252,7 +252,11 @@ async def execute_scoped_generation(
         # runs a full index, because the full sweep cannot run here — it would
         # delete every page of a type this run did not reproduce, which on a
         # scoped run is nearly all of them.
-        swept_page_ids = await sweep_superseded_generated_pages(session, repo_id, generated_pages)
+        swept_page_ids = await sweep_superseded_generated_pages(
+            session,
+            repo_id,
+            generated_pages,
+        )
         # Rows of a page type that no longer exists. Safe on a scoped run
         # precisely because it does not ask what the run produced: nothing can
         # emit a retired type, so absence is never evidence of a narrow scope.
