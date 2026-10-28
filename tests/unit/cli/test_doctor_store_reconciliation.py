@@ -156,6 +156,7 @@ def test_an_unopenable_vector_store_is_a_failing_row(tmp_path: Path, monkeypatch
     assert "connect_async" in detail
     assert "repowise reindex" in detail
     assert rows["SQL ↔ Vector Store"] != (True, "in sync")
+    assert rows["Coordinator drift"][0] is False
 
 
 def test_an_empty_vector_store_is_not_in_sync(tmp_path: Path) -> None:

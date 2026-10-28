@@ -92,8 +92,13 @@ def test_tombstones_are_never_missing_and_their_leftovers_are_orphans(tmp_path: 
     rows = _rows(repo_path)
     assert rows["SQL ↔ Vector Store"] == (False, "0 missing, 1 orphaned")
     assert rows["SQL ↔ FTS Index"] == (False, "0 missing, 1 orphaned")
+    assert rows["Coordinator drift"][0] is False
 
     _rows(repo_path, repair=True)
     rows = _rows(repo_path)
     assert rows["SQL ↔ Vector Store"] == (True, "in sync")
     assert rows["SQL ↔ FTS Index"] == (True, "in sync")
+    assert rows["Coordinator drift"][0] is True
+    assert "Drift=0.0%" in rows["Coordinator drift"][1]
+    assert "Eligible SQL=1" in rows["Coordinator drift"][1]
+    assert "raw SQL pages=3" in rows["Coordinator drift"][1]

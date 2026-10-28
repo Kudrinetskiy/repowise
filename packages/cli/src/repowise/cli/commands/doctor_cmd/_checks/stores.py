@@ -281,32 +281,35 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
     return rows
 
 
-async def _decision_aware_drift(session, repo_path: _DoctorPath, result: dict, vector_store):
-    """Recompute the coordinator's drift with decisions counted on the SQL side.
+async def _eligible_vector_drift(session, repo_path: _DoctorPath, result: dict, vector_store):
+    """Compare the same eligible ID populations as the reconciliation above.
 
-    The vector store also holds decision embeddings ("decision:<id>"), so
-    without this every decision reads as drift. Only decisions that actually
-    have a vector count: one can legitimately be unembedded, and counting it
-    would bias drift positive (SQL > Vector) forever.
+    Raw SQL counts include retained tombstones and intentionally unindexed
+    pages. They are diagnostics, not the expected vector population. Optional
+    vectors (including decisions) count only when present and still SQL-owned.
+    ID differences also catch a missing vector replaced by an unrelated one.
     """
     from repowise.core.persistence import get_repository_by_path
 
+    result["drift"] = None
+    result["eligible_sql_count"] = None
+    if vector_store is None:
+        return
+    for key in ("sql_pages_error", "sql_decisions_error", "vector_count_error"):
+        if key in result:
+            raise RuntimeError(result[key])
     repo = await get_repository_by_path(session, str(repo_path))
     if repo is None:
-        return
-    dec_ids = await _decision_vector_ids(session, repo.id)
-    decision_count = len(dec_ids)
-    if vector_store is not None:
-        with contextlib.suppress(Exception):
-            store_ids = await vector_store.list_page_ids()
-            decision_count = len(dec_ids & store_ids)
-    sql_pages = result.get("sql_pages")
-    vector_count = result.get("vector_count")
-    if sql_pages is not None:
-        adjusted_sql = sql_pages + decision_count
-        result["sql_pages"] = adjusted_sql
-        if vector_count is not None and vector_count != -1:
-            result["drift"] = abs(adjusted_sql - vector_count) / max(adjusted_sql, 1)
+        raise RuntimeError("repository not found in SQL")
+    sql = await _sql_side(session, repo_path, repo.id)
+    store_ids = await vector_store.list_page_ids()
+    expected_ids = sql.vector_indexable_ids | (sql.vector_sql_ids & store_ids)
+    missing = expected_ids - store_ids
+    orphaned = store_ids - sql.vector_sql_ids
+    result["eligible_sql_count"] = len(expected_ids)
+    result["missing_vector_count"] = len(missing)
+    result["orphaned_vector_count"] = len(orphaned)
+    result["drift"] = (len(missing) + len(orphaned)) / max(len(expected_ids), 1)
 
 
 async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath) -> dict:
@@ -318,19 +321,19 @@ async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath)
     engine, sf = await open_store(repo_path)
     vector_store = None
     lance_dir = repowise_dir / "lancedb"
-    if lance_dir.exists():
-        with contextlib.suppress(Exception):
+    try:
+        if lance_dir.exists():
             vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
 
-    async with get_session(sf) as session:
-        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
-        result = await coord.health_check()
-        await _decision_aware_drift(session, repo_path, result, vector_store)
-
-    if vector_store is not None:
-        with contextlib.suppress(Exception):
-            await vector_store.close()
-    await engine.dispose()
+        async with get_session(sf) as session:
+            coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
+            result = await coord.health_check()
+            await _eligible_vector_drift(session, repo_path, result, vector_store)
+    finally:
+        if vector_store is not None:
+            with contextlib.suppress(Exception):
+                await vector_store.close()
+        await engine.dispose()
     return result
 
 
@@ -357,12 +360,31 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
         vec_display = (
             str(vector_count) if vector_count != -1 and vector_count is not None else "unknown"
         )
-        detail = f"SQL={sql_pages}, Vector={vec_display}, Drift={drift_pct}"
+        detail = (
+            f"Eligible SQL={result.get('eligible_sql_count')}, Vector={vec_display}, "
+            f"Drift={drift_pct} (raw SQL pages={sql_pages})"
+        )
+        if drift:
+            detail += (
+                f" · {result['missing_vector_count']} missing, "
+                f"{result['orphaned_vector_count']} orphaned"
+            )
+        optional_store = False
+        if drift is None and not (ctx.repowise_dir / "lancedb").exists():
+            from repowise.cli.providers import resolve_embedder_for_repo
+
+            # Keyless/full-text operation deliberately needs no semantic
+            # index. A missing real-embedder index or unreadable existing
+            # store is still a failure, not this non-semantic warning.
+            optional_store = resolve_embedder_for_repo(ctx.repo_path) == "mock"
+            if optional_store:
+                detail += " · semantic search off (mock); vector index not initialized"
         row = _check(
             "Coordinator drift",
-            drift is None or drift < 0.05,
+            drift == 0.0 or optional_store,
             detail,
             check_id="coordinator-drift",
+            warn=optional_store,
         )
         ctx.coord_drift_color = drift_color
         ctx.coord_drift_pct = drift_pct
@@ -370,10 +392,9 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
     except Exception as exc:
         return _check(
             "Coordinator drift",
-            True,
+            False,
             f"Could not check: {exc}",
             check_id="coordinator-drift",
-            warn=True,
         )
 
 

@@ -181,7 +181,8 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert got["Stale pages"] == (True, "0 stale")
     assert got["SQL ↔ Vector Store"] == (True, "in sync")
     assert got["SQL ↔ FTS Index"] == (True, "in sync")
-    assert got["Coordinator drift"] == (True, "SQL=1, Vector=1, Drift=0.0%")
+    assert got["Coordinator drift"][0] is True
+    assert "Drift=0.0%" in got["Coordinator drift"][1]
     assert got["Hosted account"][1].startswith("Not signed in")
     # JSON format prints nothing; the table and advisories are table-only.
     assert env["printed"] == []
@@ -275,8 +276,77 @@ def test_drift_rows_and_coordinator(env, tmp_path) -> None:
     assert got["Database"] == (True, "2 pages")
     assert got["SQL ↔ Vector Store"] == (False, "1 missing, 1 orphaned")
     assert got["SQL ↔ FTS Index"] == (False, "1 missing, 1 orphaned")
-    # Same count on both sides: the coordinator reads 0% drift.
-    assert got["Coordinator drift"] == (True, "SQL=2, Vector=2, Drift=0.0%")
+    # Equal counts do not conceal a missing ID replaced by an orphan.
+    assert got["Coordinator drift"][0] is False
+    assert "1 missing, 1 orphaned" in got["Coordinator drift"][1]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_coordinator_accepts_optional_decision_vectors(env, tmp_path, embedded) -> None:
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo = asyncio.run(_build(tmp_path))
+
+    async def add_decision():
+        from repowise.core.persistence import get_repository_by_path
+
+        engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise/wiki.db'}")
+        async with get_session(create_session_factory(engine)) as session:
+            owner = await get_repository_by_path(session, str(repo))
+            decision = DecisionRecord(
+                repository_id=owner.id, title="Use SQLite", decision="Keep local state in SQLite"
+            )
+            session.add(decision)
+            await session.commit()
+            decision_id = decision.id
+        await engine.dispose()
+        if embedded:
+            store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+            await store.embed_and_upsert(f"decision:{decision_id}", "Use SQLite", {})
+            await store.close()
+
+    asyncio.run(add_decision())
+    got = _by_name(_rows(repo))
+    assert got["SQL ↔ Vector Store"] == (True, "in sync")
+    assert got["Coordinator drift"][0] is True
+    assert "Drift=0.0%" in got["Coordinator drift"][1]
+    assert "raw SQL pages=1" in got["Coordinator drift"][1]
+    assert f"Eligible SQL={2 if embedded else 1}" in got["Coordinator drift"][1]
+
+
+def test_coordinator_does_not_pass_small_real_vector_loss(env, tmp_path) -> None:
+    ids = tuple(f"file_page:f{i}.py" for i in range(21))
+    repo = asyncio.run(
+        _build(
+            tmp_path,
+            pages=tuple((pid, pid.split(":")[1], pid) for pid in ids),
+            fts=ids,
+            vectors=ids[:-1],
+        )
+    )
+    got = _by_name(_rows(repo))
+    assert got["SQL ↔ Vector Store"] == (False, "1 missing, 0 orphaned")
+    assert got["Coordinator drift"][0] is False
+
+
+@pytest.mark.parametrize(("embedder", "level"), [("mock", "warn"), ("ollama", "fail")])
+def test_coordinator_unknown_vector_population_is_not_healthy(
+    env, tmp_path, monkeypatch, embedder, level
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks.context import CheckContext
+    from repowise.cli.commands.doctor_cmd._checks.stores import _coordinator_row
+
+    repo = asyncio.run(_build(tmp_path, vectors=()))
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    (repo / ".repowise/config.yaml").write_text(f"embedder: {embedder}\n")
+    row = _coordinator_row(CheckContext(repo, repo / ".repowise"))
+    assert row.level == level
+    assert "unknown" in row.detail
+    if embedder == "mock":
+        assert "semantic search off" in row.detail
 
 
 def test_stale_pages_row(env, monkeypatch, tmp_path) -> None:
@@ -521,4 +591,4 @@ def test_coordinator_drift_is_colored_in_table(env, monkeypatch, tmp_path) -> No
     )
     repo_checks._run_repo_checks(repo, repair=False)
     coord = next(r for r in rows if r[0] == "Coordinator drift")
-    assert coord[2] == "SQL=2, Vector=1, Drift=[red]50.0%[/red]"
+    assert "Drift=[red]50.0%[/red]" in coord[2]

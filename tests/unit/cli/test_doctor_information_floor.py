@@ -107,6 +107,10 @@ def test_a_page_below_the_floor_is_not_reported_as_drift(
 
     assert rows["SQL ↔ Vector Store"] == (True, "in sync")
     assert rows["SQL ↔ FTS Index"] == (True, "in sync")
+    assert rows["Coordinator drift"][0] is True
+    assert "Drift=0.0%" in rows["Coordinator drift"][1]
+    assert "Eligible SQL=1" in rows["Coordinator drift"][1]
+    assert "raw SQL pages=2" in rows["Coordinator drift"][1]
 
 
 def test_the_same_page_is_drift_when_the_floor_is_off(
@@ -122,3 +126,4 @@ def test_the_same_page_is_drift_when_the_floor_is_off(
 
     assert rows["SQL ↔ Vector Store"] == (False, "1 missing, 0 orphaned")
     assert rows["SQL ↔ FTS Index"] == (False, "1 missing, 0 orphaned")
+    assert rows["Coordinator drift"][0] is False
