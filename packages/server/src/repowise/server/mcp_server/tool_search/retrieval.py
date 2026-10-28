@@ -26,6 +26,9 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._helpers import (
+    _wait_for_vector_store as _wait_for_vector_store,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
     PAGELESS_FILE,
@@ -59,13 +62,6 @@ from .serve import (
 )
 
 _log = logging.getLogger("repowise.mcp.search")
-
-
-async def _wait_for_vector_store(ctx) -> None:
-    """Block (bounded) until the vector store signals readiness, if it tracks it."""
-    if ctx.vector_store_ready is not None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
 
 
 async def _safe_fts(ctx, query: str, limit: int) -> list:

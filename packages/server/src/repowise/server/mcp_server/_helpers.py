@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -174,6 +176,31 @@ def _cross_repo_cut(alias: str | None) -> dict:
     if not _is_workspace_mode():
         return {"lookup": None, "alias": None}
     return {"lookup": _state._cross_repo_enricher, "alias": alias}
+
+
+async def _wait_for_vector_store(ctx: Any) -> None:
+    """Wait boundedly, then bind this single-repo context's completed resources.
+
+    Workspace contexts are updated in place by their registry. Only a native
+    single-repo snapshot carrying the current root and readiness event may read
+    the process globals; a context from another repo/session must retain its own.
+    """
+    ready = getattr(ctx, "vector_store_ready", None)
+    if ready is None:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(ready.wait(), timeout=30.0)
+    if (
+        ready.is_set()
+        and ready is _state._vector_store_ready
+        and _state._registry is None
+        and getattr(ctx, "alias", None) == "default"
+        and _state._repo_path is not None
+        and getattr(ctx, "path", None) == Path(_state._repo_path)
+        and getattr(ctx, "session_factory", None) is _state._session_factory
+    ):
+        ctx.vector_store = _state._vector_store
+        ctx.decision_store = _state._decision_store
 
 
 async def _resolve_repo_context(repo: str | None = None) -> Any:
