@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `3cd7acb0c485f9275bcf8f53b9c388fe9f80d6e3`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `66e175a4ed75cabd5aee81a290e3e564e5fb9772`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -60,7 +60,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@3cd7acb0c485f9275bcf8f53b9c388fe9f80d6e3"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@66e175a4ed75cabd5aee81a290e3e564e5fb9772"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -225,6 +225,8 @@ Reindex не пишет prose, но пишет embeddings и может вызв
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 
 ## Источники текущей проверки
+
+- MCP readiness текущего pin: первый semantic search и answer-retrieval ожидают завершения загрузки и получают ресурсы только своего single-repo контекста; workspace/root/event/SQL-session isolation и bounded/keyless fallback сохранены. RED→GREEN, финальный owner30PASS, смежные модули293PASS; Ruff lint/diff и сборка четырёх пакетов/изолированный wheel preview/чистый MCP stdio PASS. Whole-file format-check двух файлов остаётся RED точно как на исходном HEAD; несвязанные переформатирования не включены. Это MCP-only изменение не требует повторного update/reindex или генерации существующих индексов.
 
 - Working checkout v0.59.0 help перечисленных команд.
 - init_cmd/_plan.py и cli/ui/plan_screen — текущие interactive actions.
