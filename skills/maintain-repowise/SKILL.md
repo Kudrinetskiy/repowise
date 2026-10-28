@@ -32,7 +32,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `cb740cd6341ffa849f6179723d7f2dd3ebab4db7`. This runtime pin names the tested code commit; `main` may additionally contain documentation-only commits. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `cb740cd6341ffa849f6179723d7f2dd3ebab4db7`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
 ### Target 0.59 contracts
 
