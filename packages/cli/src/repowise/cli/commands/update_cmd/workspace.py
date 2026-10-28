@@ -24,6 +24,11 @@ def _print_repo_result(result: Any) -> None:
 
     if result.error:
         console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
+    elif result.skipped_reason == "cleanup_only":
+        console.print(
+            f"    [green]✓[/green] {result.alias}: deferred search cleanup completed; "
+            "no pages regenerated"
+        )
     elif result.skipped_reason == "in_flight":
         # Surface skipped-because-in-flight as a yellow note rather than a
         # silent skip. Single-flight is the noise-fix path, so the user
@@ -249,6 +254,7 @@ def _repo_staleness(
     """Whether one repo is behind its index, its config or its working tree."""
     from repowise.cli.helpers import load_state
     from repowise.core.ingestion.change_detector import has_working_tree_changes
+    from repowise.core.pipeline.cleanup_debt import has_pending_cleanup
     from repowise.core.repo_config import config_fingerprint
     from repowise.core.workspace import check_repo_staleness
 
@@ -267,12 +273,16 @@ def _repo_staleness(
         indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
     )
     is_stale = is_stale or dirty
+    cleanup_pending = indexed and has_pending_cleanup(abs_path)
+    is_stale = is_stale or cleanup_pending
     if not indexed:
         status = "[dim]not indexed[/dim]"
     elif config_stale and not behind:
         status = "[yellow]config changed[/yellow]"
     elif dirty:
         status = "[yellow]uncommitted changes[/yellow]"
+    elif cleanup_pending:
+        status = "[yellow]search cleanup pending[/yellow]"
     elif is_stale:
         status = f"[yellow]{behind} new commit(s)[/yellow]"
     else:
@@ -350,6 +360,10 @@ def _workspace_index_only_update(
             on_repo_done=_print_repo_result,
         )
     )
+
+    cleanup_errors = [r.alias for r in results if r.skipped_reason == "cleanup_failed"]
+    if cleanup_errors:
+        raise click.ClickException("Deferred cleanup failed: " + ", ".join(cleanup_errors))
 
     # Members indexed for the first time (e.g. added with --no-index) would
     # otherwise default the distill rewrite hook to enabled despite a
@@ -469,6 +483,7 @@ class _DocsTally:
     noop: int = 0  # already current / nothing to regenerate
     #: Members that really regenerated, for the cross-repo pass.
     changed: list[str] = field(default_factory=list)
+    cleanup_failed: list[str] = field(default_factory=list)
 
 
 def _workspace_docs_update(
@@ -515,7 +530,12 @@ def _workspace_docs_update(
     core_results = _update_core_members(
         ws_root, ws_config, repo_filter, docs_aliases, include_working_tree=include_working_tree
     )
-    changed_aliases: list[str] = [r.alias for r in core_results if r.updated]
+    cleanup_errors = [r.alias for r in core_results if r.skipped_reason == "cleanup_failed"]
+    if cleanup_errors:
+        raise click.ClickException("Deferred cleanup failed: " + ", ".join(cleanup_errors))
+    changed_aliases: list[str] = [
+        r.alias for r in core_results if r.updated and r.skipped_reason != "cleanup_only"
+    ]
     docs = _update_docs_members(
         ws_root,
         ws_config,
@@ -545,6 +565,8 @@ def _workspace_docs_update(
         ),
     )
     changed_aliases.extend(docs.changed)
+    if docs.cleanup_failed:
+        raise click.ClickException("Deferred cleanup failed: " + ", ".join(docs.cleanup_failed))
 
     # The single-repo path only writes each repo's state.json, so re-sync the
     # workspace config: the next run then sees the docs repos up to date.
@@ -625,6 +647,8 @@ def _update_docs_members(
     ws_root: Path, ws_config: Any, docs_aliases: set[str], update_kwargs: dict[str, Any]
 ) -> _DocsTally:
     """Docs members, one at a time, through the full single-repo update."""
+    from repowise.core.pipeline.cleanup_debt import CleanupDebtError
+
     from .command import UpdateOutcome, run_update
 
     tally = _DocsTally()
@@ -637,6 +661,8 @@ def _update_docs_members(
             outcome = run_update(path=str(repo_path), **update_kwargs)
         except Exception as exc:
             tally.failed += 1
+            if isinstance(exc.__cause__, CleanupDebtError):
+                tally.cleanup_failed.append(entry.alias)
             console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
             continue
         # A deferred run regenerated nothing, and run_update already printed

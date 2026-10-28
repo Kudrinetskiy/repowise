@@ -179,6 +179,22 @@ def _record_update_outcome(
     )
 
 
+def _replay_pending_cleanup(repo_path: Any) -> None:
+    from click import ClickException
+
+    from repowise.core.pipeline.cleanup_debt import CleanupDebtError, has_pending_cleanup
+    from repowise.core.pipeline.cleanup_replay import replay_cleanup_debt
+
+    if not has_pending_cleanup(Path(repo_path)):
+        return
+    try:
+        resolved = run_async(replay_cleanup_debt(Path(repo_path)))
+    except CleanupDebtError as exc:
+        raise ClickException(str(exc)) from exc
+    if resolved:
+        console.print(f"[green]Deferred cleanup resolved {resolved} search-index entries.[/green]")
+
+
 def _finish_outcome(
     repo_path: Any,
     agents_md: bool | None,
@@ -190,6 +206,7 @@ def _finish_outcome(
     """Every update outcome ends here: the stored read views, then the editor
     files that quote them. ``write=False`` (a dry run) skips the views."""
     if write:
+        _replay_pending_cleanup(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
     with timed(timings, "editor_files"):
@@ -1084,6 +1101,13 @@ def _announce_rework(run: UpdateRun) -> None:
 
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Nothing changed: refresh stamps under the lock, show notices, exit NOOP."""
+    if not opts.dry_run:
+        healed = _heal_up_to_date_store(opts, run)
+        if healed is False:
+            from repowise.core.pipeline.cleanup_debt import has_pending_cleanup
+
+            if has_pending_cleanup(Path(run.repo_path)):
+                return _emit_done(run, UpdateOutcome.DEFERRED)
     console.print("[green]Already up to date.[/green]")
     # A template wiki is current but has no model-written pages yet.
     if resolve_docs_mode(run.state) == "deterministic":
@@ -1091,8 +1115,6 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             "[dim]Documentation is built from code. "
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
-    if not opts.dry_run:
-        _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
     # Best-effort: a notice must never turn a clean no-op into an error.
     try:
@@ -1112,7 +1134,7 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     return _emit_done(run, UpdateOutcome.NOOP)
 
 
-def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
+def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> bool:
     """Backfill fingerprints and re-stamp the store on the "up to date" path."""
     repo_path, state, head = run.repo_path, run.state, run.head
     # Backfill fingerprints an older index never wrote; an unset renderer stamp
@@ -1127,7 +1149,11 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
     heal_lock = try_acquire_update_lock(repo_path, head)
     if heal_lock is not None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
-        return
+        from repowise.core.pipeline.cleanup_debt import has_pending_cleanup
+
+        if has_pending_cleanup(Path(repo_path)):
+            _report_lock_held(run, heal_lock)
+        return False
     try:
         rescanned = run.scanner_changed and rescan_security_if_changed(
             repo_path, state, list(run.cfg.get("exclude_patterns") or [])
@@ -1149,6 +1175,7 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         _finish_outcome(repo_path, opts.agents_md)
         # Current index: any pending marker is caught up.
         consume_update_pending(repo_path, head)
+        return True
     finally:
         release_update_lock(repo_path)
 
@@ -1251,6 +1278,8 @@ def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
 def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
     """Under the lock: backfill the docs mode, upgrade the store, show notices."""
     repo_path, state = run.repo_path, run.state
+    if not opts.dry_run:
+        _replay_pending_cleanup(repo_path)
     # Backfill the docs mode on legacy state, never from a one-off --docs/--no-docs.
     explicit_override = (
         # index_only=True always counts as an override.

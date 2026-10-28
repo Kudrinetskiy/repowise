@@ -264,6 +264,10 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     # them, as the single-repo update does, even with HEAD unmoved.
     if not is_stale and git_history_stale(state) and await _has_persisted_repo_index(abs_path):
         is_stale = True
+    if not is_stale:
+        from ...pipeline.cleanup_debt import has_pending_cleanup
+
+        is_stale = has_pending_cleanup(abs_path)
     return is_stale, current_head
 
 
@@ -382,8 +386,7 @@ def _defer_in_flight_repo(
     age = _lock_age_seconds(existing)
     target_short = (existing.get("target_commit") or "")[:8]
     _log.info(
-        "workspace_update: skipping %s — update already in flight "
-        "(pid=%s target=%s elapsed=%ss)",
+        "workspace_update: skipping %s — update already in flight (pid=%s target=%s elapsed=%ss)",
         alias,
         existing.get("pid"),
         target_short,
@@ -473,7 +476,7 @@ def _collect_update_results(
             )
         else:
             results.append(r)
-            if r.updated:
+            if r.updated and r.skipped_reason != "cleanup_only":
                 changed_aliases.append(r.alias)
     return changed_aliases
 

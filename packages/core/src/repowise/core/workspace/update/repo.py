@@ -417,6 +417,40 @@ async def update_single_repo_index(
 
     drift = _drift_requirements(*_config_changes(repo_path, state, repo_config))
     has_persisted_index = await _has_persisted_repo_index(repo_path)
+    from ...pipeline.cleanup_debt import CleanupDebtError, has_pending_cleanup
+    from ...pipeline.cleanup_replay import replay_cleanup_debt
+
+    had_cleanup = has_pending_cleanup(repo_path)
+    if had_cleanup:
+        try:
+            await replay_cleanup_debt(repo_path)
+        except CleanupDebtError as exc:
+            return RepoUpdateResult(
+                alias=alias, updated=False, skipped_reason="cleanup_failed", error=str(exc)
+            )
+        from ...ingestion.change_detector import has_working_tree_changes
+
+        if (
+            has_persisted_index
+            and base_ref == get_head_commit(repo_path)
+            and not drift.requires_full_reindex
+            and not git_history_stale(state)
+            and not (include_working_tree and has_working_tree_changes(repo_path))
+        ):
+            return RepoUpdateResult(alias=alias, updated=True, skipped_reason="cleanup_only")
+
+    async def finish_cleanup(result: RepoUpdateResult) -> RepoUpdateResult:
+        # Outside _try_incremental_update: cleanup failure must never trigger
+        # its full-index fallback, including debt created by this update.
+        if result.error is None:
+            try:
+                await replay_cleanup_debt(repo_path)
+            except CleanupDebtError as exc:
+                result.updated = False
+                result.skipped_reason = "cleanup_failed"
+                result.error = str(exc)
+        return result
+
     if drift.requires_full_reindex and has_persisted_index:
         _log.info(
             "workspace_update: %s config fingerprint drifted — full re-index "
@@ -434,16 +468,18 @@ async def update_single_repo_index(
             repo_path, state, str(base_ref), exclude_patterns, include_working_tree
         )
         if incremental_result is not None:
-            return incremental_result
+            return await finish_cleanup(incremental_result)
 
-    return await _full_index_update(
-        repo_path,
-        state,
-        merged_excludes,
-        repo_commit_depth,
-        repo_follow_renames,
-        drift,
-        progress,
+    return await finish_cleanup(
+        await _full_index_update(
+            repo_path,
+            state,
+            merged_excludes,
+            repo_commit_depth,
+            repo_follow_renames,
+            drift,
+            progress,
+        )
     )
 
 
@@ -500,10 +536,7 @@ def _drift_requirements(
     )
     require_health_success = requires_full_reindex and (
         changed_dependencies is None
-        or bool(
-            {"traversal", "git_history", "health", "other"}
-            & (changed_dependencies or set())
-        )
+        or bool({"traversal", "git_history", "health", "other"} & (changed_dependencies or set()))
     )
     return _ConfigDrift(requires_full_reindex, require_git_success, require_health_success)
 

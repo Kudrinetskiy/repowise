@@ -14,13 +14,42 @@ def _path(repo_path: Path) -> Path:
     return repo_path / ".repowise" / "cleanup-debt.json"
 
 
-def load_cleanup_debt(repo_path: Path) -> dict[str, set[str]]:
+class CleanupDebtError(RuntimeError):
+    """Deferred search cleanup could not be safely completed."""
+
+
+def load_cleanup_debt(repo_path: Path, *, strict: bool = False) -> dict[str, set[str]]:
     path = _path(repo_path)
     try:
+        if strict and (
+            path.is_symlink()
+            or (path.exists() and (not path.is_file() or path.stat().st_size > 16 * 1024 * 1024))
+        ):
+            raise CleanupDebtError("Unsafe or oversized deferred cleanup ledger")
         raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except (OSError, ValueError, TypeError):
+        if strict and (
+            not isinstance(raw, dict)
+            or set(raw) - set(_KINDS)
+            or any(
+                not isinstance(raw.get(kind, []), list)
+                or any(not isinstance(pid, str) or not pid for pid in raw.get(kind, []))
+                for kind in _KINDS
+            )
+        ):
+            raise CleanupDebtError("Malformed deferred cleanup ledger")
+    except (OSError, ValueError, TypeError) as exc:
+        if strict:
+            raise CleanupDebtError("Cannot read deferred cleanup ledger") from exc
         raw = {}
     return {kind: set(raw.get(kind) or []) for kind in _KINDS}
+
+
+def has_pending_cleanup(repo_path: Path) -> bool:
+    """Unreadable debt must reach error reporting, never an up-to-date shortcut."""
+    try:
+        return any(load_cleanup_debt(repo_path, strict=True).values())
+    except CleanupDebtError:
+        return True
 
 
 def record_cleanup_debt(repo_path: Path, kind: str, page_ids: set[str]) -> None:
@@ -36,10 +65,12 @@ def record_cleanup_debt(repo_path: Path, kind: str, page_ids: set[str]) -> None:
     )
 
 
-def clear_cleanup_debt(repo_path: Path, kind: str, page_ids: set[str]) -> None:
+def clear_cleanup_debt(
+    repo_path: Path, kind: str, page_ids: set[str], *, strict: bool = False
+) -> None:
     if not page_ids:
         return
-    debt = load_cleanup_debt(repo_path)
+    debt = load_cleanup_debt(repo_path, strict=strict)
     debt[kind].difference_update(page_ids)
     path = _path(repo_path)
     path.parent.mkdir(parents=True, exist_ok=True)
