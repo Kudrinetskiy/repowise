@@ -258,6 +258,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
+        job_checkpoint_out: dict[str, Any] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -282,6 +283,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         ``persisted_page_ids`` is the set of ids that already have a stored
         page row. On ``resume`` a page counts as done only when it is in both
         this set and the vector store; None trusts the vector store alone.
+
+        ``job_checkpoint_out`` receives the final checkpoint, including explicit
+        failed/skipped IDs and skip reasons, for callers reporting partial runs.
 
         ``timings`` is the run's shared ``PhaseTimings`` table. Generation
         records its per-level and checkpoint spans into it so they report
@@ -328,6 +332,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             on_warning=on_warning,
             persisted_page_ids=persisted_page_ids,
             on_embed=on_embed,
+            job_checkpoint_out=job_checkpoint_out,
         )
 
     # ------------------------------------------------------------------

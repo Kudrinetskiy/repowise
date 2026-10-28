@@ -97,6 +97,12 @@
     dropped, with their signatures: ``content`` is also the index entry, and
     ``log`` alone would take ``structlog`` and ``get_logger`` out of it.
 -#}
+{%- if ctx.file_category == "doc" and ctx.file_source_snippet %}
+
+## Document contents
+
+{{ ctx.file_source_snippet }}
+{%- endif %}
 {%- if api_syms or other_syms %}
 
 ## {{ labels.public_api }}

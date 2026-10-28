@@ -97,6 +97,10 @@ class GenerateOutcome:
     tokens: int = 0
     #: Model-written pages still stale after the run.
     stale_page_ids: set[str] = field(default_factory=set)
+    completed_page_ids: tuple[str, ...] = ()
+    failed_page_ids: tuple[str, ...] = ()
+    skipped_page_ids: tuple[str, ...] = ()
+    skip_reasons: dict[str, str] = field(default_factory=dict)
     #: The skipped decision lanes this run filled, when any were pending.
     decision_lanes: Any | None = None
 
@@ -302,6 +306,10 @@ async def run_scoped_generation(
             cost_usd=cost_tracker.session_cost,
             tokens=cost_tracker.session_tokens,
             stale_page_ids=stale_ids,
+            completed_page_ids=result.completed_page_ids,
+            failed_page_ids=result.failed_page_ids,
+            skipped_page_ids=result.skipped_page_ids,
+            skip_reasons=result.skip_reasons,
             decision_lanes=lanes,
         )
     finally:

@@ -29,6 +29,7 @@ from ..concept_tree.naming import (
     disambiguate_titles,
 )
 from ..models import member_structural_key, scc_page_slug
+from ..near_clones import select_clone_representatives
 from .scoring import (
     score_api_contract,
     score_file,
@@ -216,6 +217,15 @@ def _is_code_file(parsed: Any) -> bool:
     return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
 
 
+def _is_document_file(parsed: Any) -> bool:
+    fi = parsed.file_info
+    return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language == "markdown"
+
+
+def _is_file_page_candidate(parsed: Any) -> bool:
+    return _is_code_file(parsed) or _is_document_file(parsed)
+
+
 # ---------------------------------------------------------------------------
 # File-page volume policy
 #
@@ -280,7 +290,9 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
+    return sum(
+        1 for p in parsed_files if _is_file_page_candidate(p) and _passes_importance_floor(p)
+    )
 
 
 def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
@@ -290,18 +302,21 @@ def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
     the file alone would still give it a page.
     """
     return (
-        _is_code_file(parsed)
+        _is_file_page_candidate(parsed)
         and _passes_importance_floor(parsed)
         # Graph metrics only add to a positive score.
-        and score_file(
-            parsed,
-            pagerank=0.0,
-            betweenness=0.0,
-            max_pagerank=0.0,
-            max_betweenness=0.0,
-            is_hotspot=is_hotspot,
+        and (
+            _is_document_file(parsed)
+            or score_file(
+                parsed,
+                pagerank=0.0,
+                betweenness=0.0,
+                max_pagerank=0.0,
+                max_betweenness=0.0,
+                is_hotspot=is_hotspot,
+            )
+            > 0.0
         )
-        > 0.0
     )
 
 
@@ -313,10 +328,8 @@ def eligible_file_page_paths(
     dedupe_near_clones: bool = True,
 ) -> set[str]:
     """The files selection would consider for a page: every gate but the cap."""
-    from ..page_generator.helpers import _select_clone_representatives
-
     drop = (
-        _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
+        select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
         if dedupe_near_clones
         else set()
     )
@@ -367,21 +380,24 @@ def _build_file_candidates(
 
     scored: list[tuple[float, str]] = []
     for p in inputs.parsed_files:
-        if not _is_code_file(p):
+        if not _is_file_page_candidate(p):
             continue
         if not _passes_importance_floor(p):
             continue
         path = p.file_info.path
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
-        s = score_file(
-            p,
-            pagerank=inputs.pagerank.get(path, 0.0),
-            betweenness=inputs.betweenness.get(path, 0.0),
-            max_pagerank=max_pr,
-            max_betweenness=max_bet,
-            is_hotspot=is_hotspot,
-            kg_bonus=kg_scores.get(path, 0.0),
-        )
+        if _is_document_file(p):
+            s = 0.01 + min(max(p.file_info.size_bytes, 0), 100_000) / 100_000
+        else:
+            s = score_file(
+                p,
+                pagerank=inputs.pagerank.get(path, 0.0),
+                betweenness=inputs.betweenness.get(path, 0.0),
+                max_pagerank=max_pr,
+                max_betweenness=max_bet,
+                is_hotspot=is_hotspot,
+                kg_bonus=kg_scores.get(path, 0.0),
+            )
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))
@@ -876,6 +892,18 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
+    if getattr(inputs.config, "dedupe_near_clones", True):
+        code_files = [parsed for parsed in inputs.parsed_files if _is_code_file(parsed)]
+        dropped = select_clone_representatives(code_files, inputs.pagerank)
+        if dropped:
+            log.info("page_selection.clone_dedupe", dropped=len(dropped))
+            inputs = replace(
+                inputs,
+                parsed_files=[
+                    parsed for parsed in inputs.parsed_files if parsed.file_info.path not in dropped
+                ],
+            )
+
     files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)

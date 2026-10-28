@@ -238,9 +238,7 @@ async def test_artifact_violation_is_retried_once_and_recovers(sample_config):
     provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
     generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
 
-    response = await generator._call_provider(
-        "module_page", "Document this module.", "request-id"
-    )
+    response = await generator._call_provider("module_page", "Document this module.", "request-id")
 
     assert response.content == _CLEAN_PAGE
     assert provider.call_count == 2
@@ -279,9 +277,7 @@ async def test_retry_carries_the_discarded_attempt_s_tokens(sample_config):
     provider = MockProvider(responses=[first, second])
     generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
 
-    response = await generator._call_provider(
-        "module_page", "Document this module.", "request-id"
-    )
+    response = await generator._call_provider("module_page", "Document this module.", "request-id")
 
     assert response.content == _CLEAN_PAGE
     assert response.input_tokens == 107
@@ -298,9 +294,7 @@ async def test_a_repaired_page_is_marked_as_self_repaired(sample_config):
     provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
     generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
 
-    response = await generator._call_provider(
-        "module_page", "Document this module.", "request-id"
-    )
+    response = await generator._call_provider("module_page", "Document this module.", "request-id")
     page = generator._build_generated_page(
         "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
     )
@@ -312,9 +306,7 @@ async def test_a_first_time_page_is_not_marked_as_self_repaired(sample_config):
     provider = MockProvider(responses=[_page(_CLEAN_PAGE)])
     generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
 
-    response = await generator._call_provider(
-        "module_page", "Document this module.", "request-id"
-    )
+    response = await generator._call_provider("module_page", "Document this module.", "request-id")
     page = generator._build_generated_page(
         "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
     )
@@ -590,7 +582,7 @@ async def test_generate_all_infra_file_gets_infra_page():
     assert "file_page" not in page_types
 
 
-async def test_generate_all_returns_pages():
+async def test_generate_all_returns_pages(tmp_path):
     """generate_all returns at least 1 page for a non-empty repo."""
     config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=2)
     provider = MockProvider()
@@ -611,10 +603,24 @@ async def test_generate_all_returns_pages():
         entry_points=[],
     )
     builder = _make_builder_with([p])
+    from repowise.core.generation.job_system import JobSystem
+
+    checkpoint_out = {}
     pages = await gen.generate_all(
-        [p], {"pkg/main.py": b"def main(): pass"}, builder, repo, "test-repo"
+        [p],
+        {"pkg/main.py": b"def main(): pass"},
+        builder,
+        repo,
+        "test-repo",
+        job_system=JobSystem(tmp_path / "jobs"),
+        job_checkpoint_out=checkpoint_out,
     )
     assert len(pages) >= 1
+    cp = checkpoint_out["checkpoint"]
+    assert cp.status == "completed"
+    assert cp.total_pages == cp.completed_pages + cp.failed_pages + cp.skipped_pages
+    assert {page.page_id for page in pages} == set(cp.completed_page_ids) | set(cp.failed_page_ids)
+    assert set(cp.skip_reasons) == set(cp.skipped_page_ids)
 
 
 async def test_generate_all_reports_evidence_skipped_when_onboarding_is_disabled():
@@ -730,9 +736,7 @@ def test_build_system_prompt_strips_control_chars_from_language():
 def test_language_defaults_from_config_when_arg_omitted():
     # Callers that only build a GenerationConfig (server regenerate, pipeline
     # fallback) must still get the configured output language.
-    config = GenerationConfig(
-        max_tokens=256, token_budget=500, max_concurrency=1, language="ru"
-    )
+    config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=1, language="ru")
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
     prompt = gen._build_system_prompt("module_page")
     assert prompt.startswith("Generate all documentation content in Russian.")

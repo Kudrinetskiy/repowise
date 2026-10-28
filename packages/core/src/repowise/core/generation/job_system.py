@@ -2,7 +2,7 @@
 
 JobSystem manages long-running generation jobs via JSON checkpoint files.
 Each job maps to a single {job_id}.json file in the configured jobs_dir.
-The checkpoint records progress (completed/failed pages), current level, and
+The checkpoint records progress (completed/failed/skipped pages), current level, and
 job status.
 
 Durability contract
@@ -17,7 +17,7 @@ That window is safe because *nothing reads this field to decide what to
 generate*. A resumed run derives its skip set from the vector store (see
 ``_GenerationRun._seed_resume``), never from this file, so a lost entry
 cannot make a resume skip a page or regenerate one it should have kept.
-``failed_page_ids`` and every status transition are flushed immediately,
+Failures, skipped IDs with their reasons, and every status transition are flushed immediately,
 because the post-run failure report reads them back off disk.
 
 Writes go through ``atomic_write_text``: a reader now never sees the
@@ -31,7 +31,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -78,6 +78,9 @@ class Checkpoint:
     provider_name: str
     model_name: str
     current_level: int
+    skipped_pages: int = 0
+    skipped_page_ids: list[str] = field(default_factory=list)
+    skip_reasons: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Checkpoint:
@@ -98,6 +101,9 @@ class Checkpoint:
             provider_name=d.get("provider_name", ""),
             model_name=d.get("model_name", ""),
             current_level=d.get("current_level", 0),
+            skipped_pages=d.get("skipped_pages", 0),
+            skipped_page_ids=d.get("skipped_page_ids", []),
+            skip_reasons=d.get("skip_reasons", {}),
         )
 
 
@@ -199,11 +205,20 @@ class JobSystem:
         """
         live = self._job(job_id)
         cp = live.checkpoint
+        if page_id in cp.failed_page_ids:
+            cp.failed_page_ids.remove(page_id)
+            cp.failed_pages = len(cp.failed_page_ids)
+        if page_id in cp.skipped_page_ids:
+            cp.skipped_page_ids.remove(page_id)
+            cp.skipped_pages = len(cp.skipped_page_ids)
+            cp.skip_reasons.pop(page_id, None)
         if page_id not in live.completed:
             live.completed.add(page_id)
             cp.completed_page_ids.append(page_id)
             cp.completed_pages = len(cp.completed_page_ids)
-            cp.total_pages = max(cp.total_pages, cp.completed_pages)
+            cp.total_pages = max(
+                cp.total_pages, cp.completed_pages + cp.failed_pages + cp.skipped_pages
+            )
             live.unflushed += 1
         cp.updated_at = _now_iso()
         if live.unflushed >= _FLUSH_EVERY_PAGES:
@@ -215,13 +230,46 @@ class JobSystem:
         Flushed immediately, unlike a completion: failures are rare, and the
         CLI reads this field back off disk to report them after the run.
         """
-        cp = self._load(job_id)
+        live = self._job(job_id)
+        cp = live.checkpoint
+        if page_id in live.completed:
+            live.completed.remove(page_id)
+            cp.completed_page_ids.remove(page_id)
+            cp.completed_pages = len(cp.completed_page_ids)
+        if page_id in cp.skipped_page_ids:
+            cp.skipped_page_ids.remove(page_id)
+            cp.skipped_pages = len(cp.skipped_page_ids)
+            cp.skip_reasons.pop(page_id, None)
         if page_id not in cp.failed_page_ids:
             cp.failed_page_ids.append(page_id)
             cp.failed_pages = len(cp.failed_page_ids)
+        cp.total_pages = max(
+            cp.total_pages, cp.completed_pages + cp.failed_pages + cp.skipped_pages
+        )
         cp.updated_at = _now_iso()
         self._save(cp)
         log.warning("Page failed", job_id=job_id, page_id=page_id, error=error)
+
+    def skip_page(self, job_id: str, page_id: str, reason: str) -> None:
+        """Record a planned page rejected by a runtime gate, durably."""
+        live = self._job(job_id)
+        cp = live.checkpoint
+        if page_id in live.completed:
+            live.completed.remove(page_id)
+            cp.completed_page_ids.remove(page_id)
+            cp.completed_pages = len(cp.completed_page_ids)
+        if page_id in cp.failed_page_ids:
+            cp.failed_page_ids.remove(page_id)
+            cp.failed_pages = len(cp.failed_page_ids)
+        if page_id not in cp.skipped_page_ids:
+            cp.skipped_page_ids.append(page_id)
+            cp.skipped_pages = len(cp.skipped_page_ids)
+        cp.skip_reasons[page_id] = reason
+        cp.total_pages = max(
+            cp.total_pages, cp.completed_pages + cp.failed_pages + cp.skipped_pages
+        )
+        self._save(cp)
+        log.info("Page skipped", job_id=job_id, page_id=page_id, reason=reason)
 
     def complete_job(self, job_id: str) -> None:
         """Transition job from running → completed."""

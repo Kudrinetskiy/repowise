@@ -72,6 +72,8 @@ class FilePageContext:
     # which case the template drops the section rather than rendering an empty
     # heading.
     file_vocabulary: str = ""
+    # Full source is retained only for searchable documentation, never code.
+    file_source_snippet: str = ""
 
 
 @dataclass

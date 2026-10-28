@@ -354,7 +354,12 @@ def generate_command(
 
 
 def _account_for_plan(
-    planned_ids: set[str], generated_pages: list[Any], swept_ids: list[str]
+    planned_ids: set[str],
+    generated_pages: list[Any],
+    swept_ids: list[str],
+    *,
+    failed_ids: tuple[str, ...] = (),
+    skipped_ids: tuple[str, ...] = (),
 ) -> dict[str, int]:
     """Sort every planned page into exactly one outcome bucket."""
     from repowise.core.generation.models import STUB_FALLBACK_ERROR
@@ -372,7 +377,14 @@ def _account_for_plan(
             counts["written"] += 1
     missing = planned_ids - produced
     counts["retired"] = len(missing & set(swept_ids))
-    counts["not_produced"] = len(missing) - counts["retired"]
+    missing -= set(swept_ids)
+    failures = missing & set(failed_ids)
+    counts["failed"] += len(failures)
+    missing -= failures
+    skips = missing & set(skipped_ids)
+    if skips:
+        counts["skipped"] = len(skips)
+    counts["not_produced"] = len(missing - skips)
     return counts
 
 
@@ -408,7 +420,13 @@ def _report_outcome(outcome: Any, elapsed: float) -> None:
 def _report_pages(outcome: Any, elapsed: float) -> None:
     """Print where every planned page went, the actual cost, and what is left."""
     planned = outcome.plan.generate_ids
-    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    c = _account_for_plan(
+        planned,
+        outcome.generated_pages,
+        outcome.swept_page_ids,
+        failed_ids=outcome.failed_page_ids,
+        skipped_ids=outcome.skipped_page_ids,
+    )
     done = c["written"] + c["unchanged"]
     unchanged = f" ({c['unchanged']} unchanged, no model call)" if c["unchanged"] else ""
     stale_note = f", {outcome.marked_stale} dependents marked stale" if outcome.marked_stale else ""
@@ -422,6 +440,7 @@ def _report_pages(outcome: Any, elapsed: float) -> None:
         if c["not_produced"]
         else "",
         f"{c['failed']} failed (kept as a stub)" if c["failed"] else "",
+        f"{c['skipped']} skipped (runtime gate)" if c.get("skipped") else "",
     ]
     rest = [r for r in rest if r]
     if rest:
@@ -433,7 +452,7 @@ def _report_pages(outcome: Any, elapsed: float) -> None:
             f"[yellow]{outcome.remaining_template_pages} page(s) still unwritten.[/yellow] "
             "Run [cyan]repowise generate --unwritten[/cyan] to write them."
         )
-    else:
+    elif not (c["failed"] or c["not_produced"] or c.get("skipped")):
         console.print("Every concept page is now written.")
     # A planned page the code no longer yields stays stale however often it is
     # retried, so only the rest are pointed at `generate --stale`.

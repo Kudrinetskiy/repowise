@@ -114,6 +114,7 @@ class _GenerationRun:
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
+        job_checkpoint_out: dict[str, Any] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -140,6 +141,8 @@ class _GenerationRun:
         self.repo_structure = repo_structure
         self.repo_name = repo_name
         self.job_system = job_system
+        self.job_checkpoint_out = job_checkpoint_out
+        self.planned_page_ids: set[str] = set()
         self.on_page_done = on_page_done
         # Fired with the full GeneratedPage the instant it completes (in
         # addition to on_page_done, which only gets the page_type). Lets a
@@ -299,14 +302,24 @@ class _GenerationRun:
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
+        explicit_file_paths = {
+            p.file_info.path
+            for p in self.parsed_files
+            if self.only_page_ids is not None
+            and compute_page_id("file_page", p.file_info.path) in self.only_page_ids
+        }
         if getattr(self.config, "dedupe_near_clones", True):
             drop_paths = _select_clone_representatives(code_files, self.pagerank)
             if drop_paths:
                 log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
                 code_files = [p for p in code_files if p.file_info.path not in drop_paths]
-                parsed_files_for_selection = [
-                    p for p in self.parsed_files if p.file_info.path not in drop_paths
-                ]
+                # The shared selector owns deduplication for both planning and
+                # generation. Scoped repair still needs the requested context.
+                code_files.extend(
+                    p
+                    for p in self.parsed_files
+                    if p.file_info.path in drop_paths & explicit_file_paths
+                )
 
         try:
             community_info_map = self.graph_builder.community_info() or {}
@@ -339,6 +352,15 @@ class _GenerationRun:
 
         self.selection = selection
         self.sel_file_paths = set(selection.file_page_paths)
+        self.sel_file_paths.update(explicit_file_paths)
+        code_files.extend(
+            p
+            for p in self.parsed_files
+            if p.file_info.language == "markdown"
+            and p.file_info.path in self.sel_file_paths
+            and not p.file_info.is_api_contract
+            and not _is_infra_file(p)
+        )
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)
         self.sel_module_groups = list(selection.module_groups)
@@ -490,62 +512,34 @@ class _GenerationRun:
         )
 
     def _announce_total(self) -> None:
-        # A scoped run emits exactly the requested-and-not-yet-done ids, so the
-        # selection-derived estimate below would badly over-count. The set is
-        # still an upper bound (a page may gate-skip at build time), matching
-        # the contract the caller reconciles against the real completed count.
-        if self.only_page_ids is not None:
-            remaining_ids = self.only_page_ids - self.completed_ids
-            remaining = len(remaining_ids)
-            free_remaining = _count_free_ids(remaining_ids)
-            if self.on_total_known is not None:
-                self.on_total_known(free_remaining)
-            _announce_paid(self.on_subphase, remaining - free_remaining)
-            if self.job_system is not None and self.job_id is not None:
-                self.job_system.start_job(self.job_id, remaining)
-            return
+        from ..scope import selection_page_ids
 
-        counts = self.selection.counts()
-        # Level-8 onboarding pages (the non-promoted slots) also emit, and
-        # were previously omitted here, which made the progress total read
-        # lower than the pages actually generated (issue #922: "43 of 41").
-        # Counted in full like every other category above; the completed-id
-        # subtraction below nets out any already-generated slot on resume.
-        # This is still an upper bound: a slot may gate-skip at generation
-        # time (build_context -> None), so the caller reconciles the bar to
-        # the real completed count when generation finishes.
-        onboarding_page_count = 0
-        if getattr(self.config, "enable_onboarding", True):
+        planned = (
+            set(self.only_page_ids)
+            if self.only_page_ids is not None
+            else selection_page_ids(self.selection, self.repo_name)
+        )
+        if self.only_page_ids is None and getattr(self.config, "enable_onboarding", True):
             from .. import onboarding as _onboarding
 
-            onboarding_page_count = len(_onboarding.iter_specs())
-        estimated_total = (
-            counts["api_contract"]
-            + counts["symbol_spotlight"]
-            + counts["file_page"]
-            + counts["scc_page"]
-            + counts["module_page"]
-            + int(self.selection.emit_repo_overview)
-            + counts["infra_page"]
-            + onboarding_page_count
-        )
-        # Split the total across the two progress bars. One bar counting both
-        # tiers reads as frozen: the free levels run first, so it reaches ~97%
-        # in minutes and then crawls for the rest of the run while the ~95
-        # model-backed pages finish. The paid count is the remainder rather
-        # than a second sum, so the two always add back to the total this
-        # already reported and the job system still books the whole run.
-        free_total = sum(counts.get(page_type, 0) for page_type in _free_page_types())
-        done_free = _count_free_ids(self.completed_ids)
-        remaining_free = max(0, free_total - done_free)
-        remaining_paid = max(
-            0, (estimated_total - free_total) - (len(self.completed_ids) - done_free)
-        )
+            planned.update(
+                compute_page_id("onboarding", _onboarding.target_path(s.slot))
+                for s in _onboarding.iter_specs()
+            )
+        if getattr(self.config, "file_pages_only", False):
+            planned = {
+                p
+                for p in planned
+                if p.split(":", 1)[0] in {"file_page", "symbol_spotlight", "api_contract"}
+            }
+        self.planned_page_ids = planned - self.completed_ids
+        free_remaining = _count_free_ids(self.planned_page_ids)
         if self.on_total_known is not None:
-            self.on_total_known(remaining_free)
-        _announce_paid(self.on_subphase, remaining_paid)
+            self.on_total_known(free_remaining)
+        _announce_paid(self.on_subphase, len(self.planned_page_ids) - free_remaining)
         if self.job_system is not None and self.job_id is not None:
-            self.job_system.start_job(self.job_id, estimated_total)
+            self.job_system.start_job(self.job_id, len(self.planned_page_ids))
+        return
 
     def _file_import_edges(self) -> list[tuple[str, str]]:
         """``(src, dst)`` import edges between file nodes (src imports dst)."""
@@ -624,9 +618,7 @@ class _GenerationRun:
         self.layer_order_ids = compute_layer_order(file_layers, import_edges)
         # Tests keep their place in the tree but are not a layer of the stack.
         self.layer_order = [
-            display_of.get(lid, lid)
-            for lid in self.layer_order_ids
-            if not is_adjacent_layer(lid)
+            display_of.get(lid, lid) for lid in self.layer_order_ids if not is_adjacent_layer(lid)
         ]
 
     # ------------------------------------------------------------------
@@ -720,6 +712,8 @@ class _GenerationRun:
                                 item = _embed_item(result)
                                 if item is not None:
                                     embed_items.append(item)
+                        elif result is None:
+                            self._record_skip(page_id, "runtime_gate")
                         return result
                     except Exception as exc:
                         if self.job_system is not None and self.job_id is not None:
@@ -955,7 +949,9 @@ class _GenerationRun:
                     from ..kg_enrichment import enrich_tour_with_wiki_links
 
                     rp = (
-                        Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                        Path(self.repo_path)
+                        if not isinstance(self.repo_path, Path)
+                        else self.repo_path
                     )
                     kg_path = rp / ".repowise" / "knowledge-graph.json"
                     if kg_path.exists():
@@ -964,7 +960,17 @@ class _GenerationRun:
                     log.debug("kg_enrichment.failed", error=str(exc))
 
             if self.job_system is not None and self.job_id is not None:
+                self._reconcile_job_outcomes()
                 self.job_system.complete_job(self.job_id)
+                if self.job_checkpoint_out is not None:
+                    cp = self.job_system.get_checkpoint(self.job_id)
+                    self.job_checkpoint_out.update(
+                        checkpoint=cp,
+                        completed_page_ids=list(cp.completed_page_ids),
+                        failed_page_ids=list(cp.failed_page_ids),
+                        skipped_page_ids=list(cp.skipped_page_ids),
+                        skip_reasons=dict(cp.skip_reasons),
+                    )
 
             log.info(
                 "Generation complete",
@@ -973,6 +979,22 @@ class _GenerationRun:
                 model=self.gen._provider.model_name,
             )
             return all_pages
+
+    def _record_skip(self, page_id: str, reason: str) -> None:
+        if self.job_system is not None and self.job_id is not None:
+            self.job_system.skip_page(self.job_id, page_id, reason)
+
+    def _reconcile_job_outcomes(self) -> None:
+        if self.job_system is None or self.job_id is None:
+            return
+        checkpoint = self.job_system.get_checkpoint(self.job_id)
+        accounted = (
+            set(checkpoint.completed_page_ids)
+            | set(checkpoint.failed_page_ids)
+            | set(checkpoint.skipped_page_ids)
+        )
+        for page_id in sorted(self.planned_page_ids - accounted):
+            self.job_system.skip_page(self.job_id, page_id, "not_emitted_by_current_selection")
 
 
 # How each structurally-keyed type derives its identity. Member-keyed types

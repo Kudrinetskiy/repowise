@@ -128,6 +128,22 @@ def _inputs(parsed, pagerank, betweenness, community, cfg):
     )
 
 
+def test_near_clone_dedupe_is_part_of_shared_selection() -> None:
+    parsed = [
+        FakeParsedFile(FakeFileInfo(f"pkg/{name}.py"), [FakeSymbol("same_shape")])
+        for name in ("alpha", "beta", "gamma")
+    ]
+    pagerank = {p.file_info.path: 0.0 for p in parsed}
+    config = GenerationConfig(dedupe_near_clones=True)
+
+    selection = select_pages(_inputs(parsed, pagerank, {}, {}, config))
+
+    assert selection.file_page_paths == ["pkg/alpha.py"]
+    assert {path for group in selection.module_groups for path in group.file_paths} == {
+        "pkg/alpha.py"
+    }
+
+
 def test_every_production_file_gets_a_page():
     """No budget, so the file bucket is the whole floored candidate set."""
     parsed, pagerank, betweenness, community = _build_synthetic_repo(400)
@@ -167,6 +183,31 @@ def test_importance_floor_excludes_tests_and_reexports():
         if is_test_related_path(extra):
             assert extra not in spotlit
     assert len(sel.file_page_paths) == 6
+
+
+def test_markdown_docs_get_file_pages_without_entering_concept_modules():
+    """Canonical Markdown is searchable even though docs are not code modules."""
+    path = "docs/_task/event-change-history/01-global-plan.md"
+    parsed = [
+        FakeParsedFile(
+            file_info=FakeFileInfo(
+                path=path,
+                language="markdown",
+                size_bytes=5_000,
+            ),
+            symbols=[],
+        )
+    ]
+
+    sel = select_pages(_inputs(parsed, {path: 0.0}, {path: 0.0}, {path: 0}, GenerationConfig()))
+
+    assert sel.file_page_paths == [path]
+    assert all(path not in group.file_paths for group in sel.module_groups)
+    assert count_documentable_files(parsed) == 1
+    # Incremental update/sweeping uses this owner rather than select_pages.
+    from repowise.core.generation.selection.selector import eligible_file_page_paths
+
+    assert eligible_file_page_paths(parsed, {path: 0.0}, hotspots=set()) == {path}
 
 
 def test_selection_does_not_depend_on_having_a_key():
