@@ -26,6 +26,12 @@ Skill остаётся explicit-only. Разрешение исследоват�
 
 В каждом явно включённом в задачу repo определить canonical root, HEAD, WIP, существующие .repowise/state.json, config.yaml, wiki.db, lancedb и пользовательские editor files. Не исследовать произвольные соседние каталоги.
 
+Общий preservation/identity gate основного skill обязателен и для обычного update/generate, и для preview, не только при установке. До CLI-доступа к существующему индексу сверить canonical root с `repositories.local_path` и ID в фактически настроенной базе через native read-only SQLite; пример для default repo-local базы находится в skill. Рабочее read-only чтение не доказывает перепривязку после переноса: текущий update/generate использует точное совпадение пути. При mismatch сначала согласовать identity recovery, не создавать вторую repository-строку, не править SQL и не запускать init/reindex/full upgrade автоматически. Native full-upgrade и worktree-seed умеют менять путь только в своих условиях; это не универсальный relocation-механизм.
+
+Git status должен охватывать исходники и untracked файлы, а не только AGENTS/editor settings. Классифицировать WIP по реальному parser scope и зафиксировать согласованный snapshot до/после. Обычный update/generate тоже читает живые dirty-файлы: отсутствие `--working-tree` не выбирает committed blobs. Если нужны строго закоммиченные данные и parser может увидеть WIP, остановиться для решения пользователя; не применять stash/reset/checkout/copy. Доказанно исключённые runtime-папки сами по себе не препятствуют обслуживанию.
+
+До update/preview установить допустимую область записи. Готовые update-команды skill используют `REPOWISE_SKIP_EDITOR_SETUP=1` и `--no-agents` для сохранения editor files; намеренное обновление managed-файлов — отдельный выбор пользователя. В текущем pin отдельный coverage-hook sync этим editor opt-out не подавляется: он может изменить `.claude/settings.local.json`. Проверить `hooks.coverage_reingest` и существующие RepoWise coverage re-ingest entries. Если разрешены только `.repowise/**` и отсутствие изменения hook-файла не установлено, не запускать update/preview; не отключать/удалять настройки, чтобы обойти ограничение. Проверять файлы по исходной baseline после разрешённого запуска.
+
 ```bash
 cd /path/to/repository
 git rev-parse --show-toplevel
@@ -126,7 +132,7 @@ repowise init /path/to/repository \
 
 Локальный индекс не должен случайно попасть в commit. После разрешения на локальную настройку использовать git rev-parse --git-path info/exclude и добавить .repowise/; .mcp.json исключать, если он действительно локальный. Проверить git check-ignore и git status. Не менять общий .gitignore и не объявлять любой командный .mcp.json личным файлом без inspection.
 
-Current --no-editor-setup покрывает machine registration, project editor files и post-commit hook. Явные --no-claude-md --no-agents --no-codex --no-distill-hook --no-hook остаются defense in depth. REPOWISE_SKIP_EDITOR_SETUP=1 действует и на refresh. Отказ не удаляет уже существующие integration files: их удаление требует отдельного решения.
+Current --no-editor-setup покрывает editor-setup lifecycle: machine registration, project editor files и установку post-commit hook. Явные --no-claude-md --no-agents --no-codex --no-distill-hook --no-hook остаются defense in depth для init; не переносить неподдерживаемые init-флаги в update. REPOWISE_SKIP_EDITOR_SETUP=1 подавляет editor refresh, но не отдельный coverage-hook sync. Этот sync по сохранённой policy может добавить или удалить свои entries в `.claude/settings.local.json` даже при editor opt-out. Поэтому нельзя обещать полную неизменность settings только по этим флагам; применяется общий write-boundary gate. Уже существующие интеграции не удалять и не отключать без отдельного решения пользователя.
 
 init/update рецепты сохраняют --no-agents. generate/restyle этого флага не имеют и не создают AGENTS.md. Проверять пользовательские файлы относительно preflight, не только факт их наличия.
 
@@ -164,7 +170,7 @@ Workspace MCP читает root .repowise/.env, не каждый дочерни
 Если worktree уже имеет собственный совместимый индекс, обновлять его. Для soft reset/squash/rebase сначала выбрать существующий стабильный base в этой истории, затем inspect dry-run:
 
 ```bash
-repowise update /path/to/repository --no-workspace --no-agents \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update /path/to/repository --no-workspace --no-agents \
   --index-only --since <BASE_COMMIT> --dry-run
 ```
 
@@ -174,7 +180,7 @@ repowise update /path/to/repository --no-workspace --no-agents \
 
 Обычный update синхронизирует структуру/Git/health/file pages. Он не доказывает обновления существующей concept prose; docs-enabled путь может использовать provider для вспомогательной работы. --index-only исключает documentation provider work, но embeddings остаются отдельным механизмом.
 
---working-tree явно добавляет uncommitted staged/unstaged/untracked inputs. Совпадение marker HEAD само по себе не доказывает, что dirty content не был прочитан. Без разрешения этот режим не добавлять.
+--working-tree явно добавляет uncommitted staged/unstaged/untracked inputs в выбор изменений. Он не является переключателем между живыми файлами и Git blobs: обычный parser тоже читает live source. Совпадение marker HEAD само по себе не доказывает committed-only input. Не добавлять флаг без разрешения и не запускать обычный update как обход требования «только коммит», когда входы dirty.
 
 --docs не заменяет generate. --full поднимает один fast index до полного: сначала --full --dry-run, затем одобренная мутация. Это не full-project refresh уже написанной prose. При workspace --full требует один --repo.
 
@@ -214,17 +220,19 @@ Invariant: planned = completed + failed + skipped. Сверять exact IDs, dis
 
 Не выводить успех из Generating pages, общего page count, cumulative tokens, $0.00, exit zero или checkpoint completed без accounting. При полном prose результате проверить --unwritten --cascade none --dry-run: stubs не должны оставаться; для targeted scope глобальный ноль не требовать.
 
-Partial result останавливает новые мутации, но не read-only diagnosis: сохранить исходную команду/output/exit/plan/checkpoint/UTC; проверить SQL rows/versions, content/digest, status и full doctor на согласованном runtime. Skipped_no_file_contexts требует причины/context fix, не идентичного retry. Не называть silent drop «приблизительной оценкой» без доказательства.
+Partial result останавливает новые мутации, но не безопасную диагностику: сохранить исходную команду/output/exit/plan/checkpoint/UTC. Для читаемого совместимого индекса в одобренном scope проверить SQL rows/versions, content/digest, status и full doctor. При corruption или неясной читаемости базы приоритет у native read-only SQLite: не запускать status/doctor/MCP до согласованного и проверенного восстановления. Эти CLI-команды не являются filesystem-read-only и могут мигрировать схему/запускать MCP, поэтому прежние isolation/identity gates сохраняются. Skipped_no_file_contexts требует причины/context fix, не идентичного retry. Не называть silent drop «приблизительной оценкой» без доказательства.
 
 ## 9. Vector repair и продолжение
 
 Reindex не пишет prose, но пишет embeddings и может вызвать внешний API. Это отдельное разрешение. Не запускать его после каждого successful update и не ремонтировать raw-count разницу при совпадающих eligible sets.
 
+Перед выбором reindex проверить `.repowise/cleanup-debt.json` и исходную ошибку cleanup (Recipe 11D). Неудачное удаление swept SCC/symbol/file ID — не отсутствие embeddings. Fork умеет delete-only очистку и сохраняет точные неудачные `fts`/`vectors` ID, но обычный update при неизменных HEAD/config не гарантирует replay: idle-path долг не обрабатывает. Проверка повторного persistence pass не доказывает этот CLI-сценарий. Не обещать автоматический повтор, не редактировать/обнулять ledger и не вызывать delete API самостоятельно. Сопоставить exact debt с текущими SQL/FTS/vector sets и выяснить, какие IDs действительно устарели, не стали ли они снова live. Повреждённый/нечитаемый ledger — нерешённая диагностика, не пустая очередь и не повод для rebuild.
+
 При diagnosed missing vectors с тем же embedder/model можно согласовать reindex . --embedder <EMBEDDER>. Если явно доказана memory/timeout проблема, меньший --batch-size допустим после классификации причины, не бесконечный retry.
 
 Если все orphan IDs — SQL template file_page tombstones и их target отсутствует одновременно в живом дереве (включая symlinks), HEAD и Git index, применим точечный Recipe 11C без reindex. Нужны отдельное разрешение на exact IDs, остановленные writers/MCP и preview receipt проверенного helper из scripts/cleanup_tombstone_vectors.py. Apply повторно проверяет root/HEAD/полный vector-ID fingerprint и весь допустимый набор, затем удаляет только утверждённые векторы. Никаких SQL/source/prose/state изменений или embeddings; после операции — точное равенство оставшихся IDs и полный doctor/preservation audit. Смешанный набор, отсутствующая SQL-строка, model-written/другой тип страницы, существующий файл или изменённые inputs блокируют этот рецепт. Одобрение одного набора не распространяется автоматически на другие repo.
 
-Для остальных diagnosed orphaned/damaged store либо утверждённой смены embedder/model отдельно согласовать recoverable vector-store backup вне repo и clean reindex (Recipe 11B). Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
+Если нужен delete-only recovery сохранённого долга, отдельно согласовать и проверить такой маршрут. Несоответствия условиям 11C недостаточно для выбора полного reindex. Только после исключения узкой tombstone-очистки и deferred-delete ветки выбирать действительно обоснованный clean rebuild damaged/orphaned store либо утверждённую смену embedder/model (11B), с отдельным разрешением и recoverable vector-store backup вне repo. Не двигать healthy store автоматически. До удаления/перемещения проверить exact path, ownership, active use и recovery need. Сохранить backup до eligible-set/semantic/full doctor acceptance. При failed rebuild оставить оба каталога и сообщить точное состояние.
 
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 

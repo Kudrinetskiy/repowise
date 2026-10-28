@@ -48,6 +48,46 @@ Options were checked against the working patched 0.59 CLI. Establish acceptance 
 
 `init` and `update` recipes always use `--no-agents`. `generate` and `restyle` do not support that flag and do not manage `AGENTS.md`. Current init may save the authenticated API key by default; for ephemeral credentials use explicitly approved `--no-save-key` / `REPOWISE_NO_SAVE_KEY=1` rather than silently persisting secrets. `--no-editor-setup` also skips post-commit hook installation.
 
+## Mandatory preservation and identity gate
+
+Apply this gate before choosing any recipe, including a preview or an apparently up-to-date update. Existing user choices remain authoritative; inspection is not permission to change their files or integration policy.
+
+1. **Corrupt database takes precedence.** If SQLite reports corruption/malformed pages, stop further RepoWise CLI and MCP access to that index, including `status` and `doctor`. Preserve output and use native read-only SQLite diagnosis. The general postcheck recipes below apply only while the database is readable and integrity is not in doubt. Recovery/copy/replacement requires separate approval and successful integrity/preservation evidence before CLI/MCP is resumed.
+2. **Check repository identity before schema-migrating access.** Resolve the actual configured database and compare the canonical checkout root with its stored `repositories.local_path`/repository ID. A working status/read fallback does not prove that a moved index was rebound. For the default repo-local SQLite file use the read-only check below; a configured/shared database requires its own verified mapping, not the single-row assumption. On mismatch stop ordinary update/generate and agree identity recovery. Do not silently edit SQL, create a second repository row, run init/full upgrade, copy an index or seed it. Native full-upgrade and worktree-seed rebinding are route-specific, not universal relocation guarantees.
+3. **Check the actual source snapshot.** Record HEAD and full Git status, classify tracked/untracked WIP against the parser's scope, and keep those inputs stable until acceptance. Ordinary update/generate can read dirty live source without `--working-tree`; omitting that flag does not select committed blobs. If the user requires committed-only input and in-scope WIP exists, stop and resolve that boundary with the user. Never stash/reset/checkout/copy a checkout as an implicit prerequisite. Proven excluded runtime artifacts alone need not block maintenance. Compare source/WIP evidence afterward; sync=HEAD is not proof of clean or committed-only input.
+4. **Establish the permitted write boundary.** Update templates below use the editor-preservation branch, `REPOWISE_SKIP_EDITOR_SETUP=1`, plus `--no-agents`; a requested managed-editor refresh is a separate explicit choice. Neither flag is a universal outside-`.repowise` immutability guarantee. In this pin, the separate coverage-hook synchronization can add/remove entries in `.claude/settings.local.json` even when editor setup is skipped. Inspect `hooks.coverage_reingest` and existing RepoWise coverage re-ingest entries first. If only `.repowise/**` writes are allowed and a no-change hook path is not established, block the update/preview and report the missing protection; do not disable/delete integrations to make it fit. Snapshot existing editor files and verify the allowed boundary afterward.
+5. **Check deferred cleanup before choosing vector repair.** If `.repowise/cleanup-debt.json` exists, inspect its exact `fts`/`vectors` sets and original cleanup failure under Recipe 11D. Nonempty or unreadable debt is not cleared by sync=HEAD or a no-op message. Do not jump to reindex, edit the ledger or retry a mutation blindly.
+
+Common read-only Git preflight (route potentially large output through the host's normal inspection tools):
+
+```bash
+cd <REPO_ROOT>
+GIT_OPTIONAL_LOCKS=0 git rev-parse --show-toplevel
+GIT_OPTIONAL_LOCKS=0 git rev-parse HEAD
+GIT_OPTIONAL_LOCKS=0 git status --short --untracked-files=all
+```
+
+Default repo-local SQLite identity check; run before invoking a new CLI on that index. It does not migrate schema or repair a mismatch:
+
+```bash
+python3 - <<'PY'
+import sqlite3
+from pathlib import Path
+
+root = Path.cwd().resolve()
+path = root / '.repowise/wiki.db'
+if not path.is_file():
+    raise SystemExit('No default local database; resolve existing configuration or Recipe 8 first.')
+with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+    rows = list(db.execute('SELECT id, local_path FROM repositories LIMIT 2'))
+if len(rows) != 1 or Path(rows[0][1]).resolve() != root:
+    raise SystemExit('STOP: repository identity mismatch; diagnose the configured mapping before CLI access.')
+print('Repository identity matches:', rows[0][0], root)
+PY
+```
+
+A SQLite error from this check follows the corruption/readability branch above; do not replace it with a schema-migrating CLI call. Absence of an index is classified by inspection, not permission for automatic init.
+
 ## Inspect before proposing installation
 
 Never answer an installation request with a generic `init` block. Inspect the target first, using read-only commands, and report what is already present before offering any mutation:
@@ -81,7 +121,7 @@ Then classify the observed state:
 
 | State | Required action |
 |---|---|
-| `state.json`, database, and config exist | Run read-only `repowise status` and full `repowise doctor`. If healthy, do **not** reinstall; choose an update/generate recipe from the actual sync state. |
+| `state.json`, database, and config exist | After the mandatory identity/readability/isolation gates pass, run approved diagnostic `repowise status` and full `repowise doctor`. Do not use this row to bypass corruption or a moved-root mismatch. If healthy, do **not** reinstall; choose from the actual sync state. |
 | `.repowise/` exists but a complete state does not | Inspect its files and any resume/checkpoint evidence. Do not infer installation and do not delete it; report whether it is empty MCP scaffolding, a partial init, or an unknown artifact. |
 | Existing index errors after a CLI upgrade | Diagnose schema/migration compatibility and preserve a backup. Do not hide the error with a fresh `init`. |
 | No RepoWise index exists | Report the verified absence, then ask the user to choose the installation interaction and wiki mode described in Recipe 8. |
@@ -130,6 +170,8 @@ In the pinned patched build, dry-run planning, scope resolution, cost estimation
 `update --full` is not a universal concept-prose refresh. It upgrades one repository from the fast/indexed tier to the full tier and fills page families that are missing; it does not replace `generate --path`, `generate --page`, or `generate --all` for already-written concept prose. To upgrade a fresh `No prose` index, normally use `generate --unwritten --cascade none`. When the requested result is a full concept-prose refresh, preview and run the matching `generate --all` recipe instead.
 
 `init --dry-run` can create recoverable ingestion/session caches inside .repowise. It is not filesystem-read-only; record preflight and preservation policy first.
+
+The same write-boundary gate applies before update previews: logical wiki/state no-write guarantees do not establish editor/hook immutability. In this pin the separate coverage-hook synchronization is not disabled by the editor-preservation environment variable. Do not run a preview when its allowed write boundary is unresolved.
 
 Routine `update` without `--since` does not require a preview when the goal is ordinary structural synchronization. In the patched runtime, plain `update` does not refresh existing concept prose; use an explicit `generate` recipe for that result. Use `--index-only` when the run must avoid all provider-dependent work. `restyle` has no dry-run, so its interactive confirmations are the scope and cost gate.
 
@@ -284,7 +326,7 @@ SQL `generation_jobs` is supplemental. Use `json_extract(config_json, '$.source'
 
 A nonzero exit, unexplained persisted-page count mismatch, missing/extra planned ID, `failed_pages > 0`, unresolved in-scope stale/degraded result, or confirmed contamination is a partial result. Preserved stale concept prose outside an approved structural-only scope must be reported separately; it is not an unresolved structural repair or permission to generate prose. In 0.59, written plus proven unchanged outcomes explain a smaller timestamp-selected row set; unchanged is not skipped or failed. Fail closed on **new mutations only**.
 
-Read-only postchecks are mandatory and do not require new approval:
+Read-only postchecks are mandatory within the approved access scope. The corruption/readability gate above takes precedence: when SQLite integrity is in doubt, do not run CLI/MCP postchecks until recovery is separately approved and verified. Full doctor can also launch a registered MCP process; preserve the agreed runtime/root isolation. For a readable compatible index:
 
 - preserve the original command, stdout/stderr, UTC boundary, dry-run plan, and exit code;
 - run **Prove generation checkpoint accounting** against the exact `.repowise/jobs/*.json` file;
@@ -391,7 +433,7 @@ repowise status
 
 REPOWISE_UPDATE_STARTED_AT="$(date -u '+%Y-%m-%d %H:%M:%S')"
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents
 
@@ -424,7 +466,7 @@ git rev-parse HEAD
 repowise --version
 repowise status
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only
@@ -449,7 +491,7 @@ git rev-parse --show-toplevel
 git rev-parse HEAD
 repowise status
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --full \
@@ -459,7 +501,7 @@ repowise update . \
 Inspect the Git-tier transition, whole-repository page plan, provider/model, and any cost. After explicit approval, repeat the exact command without `--dry-run`:
 
 ```bash
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --full
@@ -482,7 +524,7 @@ Require `Last sync commit = HEAD`, no unresolved stale pages in the approved str
 cd <REPO_ROOT>
 git rev-parse HEAD
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only
@@ -558,7 +600,7 @@ If the real persisted set differs from the approved plan, do not stop before ver
 
 **When to use:** A real `generate` or `restyle` did not prove every planned page (written or, in 0.59, identity-proven unchanged), persisted an unexpected page, reported a failure/degraded result, or left contamination.
 
-**Why:** The exact `.repowise/jobs/*.json` checkpoint is the primary execution record for a real `generate` (and for `restyle` when present); `status`, `doctor` without `--repair`, checkpoint reads, and SQLite reads cannot worsen the partial state. Together they distinguish build-time selection/context skips from provider, checkpoint, SQL/FTS/vector, or content failures before any retry.
+**Why:** The exact `.repowise/jobs/*.json` checkpoint is the primary execution record for a real `generate` (and for `restyle` when present). For a readable, compatible index, scoped status/doctor and native read-only row/checkpoint reads distinguish selection/context skips from provider, persistence, index or content failures. CLI access is not filesystem-read-only and may migrate schema or launch MCP; the mandatory identity, corruption and isolation gates still apply. On SQLite corruption use native read-only diagnosis instead of the CLI commands below.
 
 ```bash
 cd <REPO_ROOT>
@@ -610,14 +652,14 @@ cd <REPO_ROOT>
 git rev-parse HEAD
 git cat-file -e '<BASE_COMMIT>^{commit}'
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
   --since <BASE_COMMIT> \
   --dry-run
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
@@ -642,14 +684,14 @@ cd <REPO_ROOT>
 git rev-parse HEAD
 git cat-file -e '<BASE_COMMIT>^{commit}'
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
   --since <BASE_COMMIT> \
   --dry-run
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
@@ -695,14 +737,14 @@ cd <REPO_ROOT>
 git rev-parse HEAD
 git cat-file -e '<BASE_COMMIT>^{commit}'
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
   --since <BASE_COMMIT> \
   --dry-run
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
@@ -743,7 +785,7 @@ A history rewrite alone is not sufficient reason to choose this recipe; require 
 cd <REPO_ROOT>
 git rev-parse HEAD
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only
@@ -783,7 +825,7 @@ Use Recipe 7 instead when the style must change or old model-output contaminatio
 cd <REPO_ROOT>
 git rev-parse HEAD
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only
@@ -964,14 +1006,14 @@ cd <REPO_ROOT>
 git rev-parse HEAD
 git cat-file -e '<WORKTREE_BASE_COMMIT>^{commit}'
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
   --since <WORKTREE_BASE_COMMIT> \
   --dry-run
 
-repowise update . \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update . \
   --no-workspace \
   --no-agents \
   --index-only \
@@ -1008,9 +1050,9 @@ Then run Recipe 8's common `status`, full `doctor`, HEAD, and pre-existing-artif
 
 **When to use:** `repowise doctor` reports genuine eligible-set vector drift, semantic search misses an eligible page present in SQL/FTS, embedding failed during generation, the vector store was lost or damaged, or the configured embedder / embedding model changed. Compare eligible SQL search IDs, not all stored rows: intentional excluded/below-floor rows do not require vectors. If eligible SQL/vector/FTS sets are synchronized with zero drift, a raw-count difference alone requires no reindex or repair.
 
-**Why:** Choose the repair from exact ID sets. `reindex` writes embeddings without calling the documentation LLM or modifying Git; the narrowly guarded Recipe 11C only removes confirmed obsolete vectors without rebuilding. Embedder/model transitions and each destructive cleanup scope require separate applicable authorization.
+**Why:** Choose the repair from exact ID sets and any saved cleanup debt, not orphan counts alone. `reindex` writes embeddings without calling the documentation LLM or modifying Git; the narrowly guarded Recipe 11C only removes confirmed obsolete vectors without rebuilding. Recipe 11D diagnoses deferred cleanup before any rebuild decision. Embedder/model transitions and each destructive cleanup scope require separate applicable authorization.
 
-Run the read-only precheck first:
+Apply the common gates and Recipe 11D first when debt exists or a prior cleanup failed. For a readable compatible index, run the approved precheck:
 
 ```bash
 cd <REPO_ROOT>
@@ -1021,7 +1063,7 @@ repowise doctor
 
 ### 11A: Missing vectors only, same embedder and model
 
-Use ordinary reindex when `doctor` reports missing vectors or an embedding failure, the configured embedder/model is unchanged, and it reports `0 orphaned`:
+After classifying any cleanup debt, use ordinary reindex for diagnosed missing vectors/embedding failure with the same embedder/model and `0 orphaned`. It is not a repair for deferred deletion or merely a raw-count mismatch:
 
 ```bash
 cd <REPO_ROOT>
@@ -1044,7 +1086,7 @@ repowise reindex . \
 
 ### 11B: Orphaned vectors or embedder/model change — clean reindex
 
-Use a clean reindex for diagnosed orphaned/damaged stores that do not qualify for Recipe 11C, or when intentionally changing the embedder/model (including `mock` to Ollama). A rebuild is not required merely because a strictly proven tombstone vector can be removed by 11C. Obtain explicit approval for the recoverable clean-store rebuild, resolve `<VECTOR_BACKUP_PATH>`, and move the whole vector directory to a recoverable backup before rebuilding:
+Use a clean reindex for diagnosed damaged stores, an explicitly approved embedder/model transition, or other orphan cases only after ruling out the narrow 11C cleanup and the deferred-delete branch in 11D. Not qualifying for 11C is not by itself a reason to rebuild. A saved failed deletion may need delete-only recovery rather than repeated embeddings. Obtain explicit approval for the recoverable clean-store rebuild, resolve `<VECTOR_BACKUP_PATH>`, and move the whole vector directory to a recoverable backup before rebuilding:
 
 ```bash
 cd <REPO_ROOT>
@@ -1090,6 +1132,43 @@ repowise doctor <REPO_ROOT> --format json
 
 Apply revalidates the receipt and live eligibility before deleting. Require the resulting vector-ID set to equal the prior set minus only the approved IDs, then full doctor synchronization and unchanged source/WIP, prose/provenance, state/docs pointer and settings. On any failure, stop new mutations and preserve the exact outcome; do not retry blindly, expand the deletion set, reindex or run broad repair. Authorization for one repository's IDs does not automatically authorize cleanup in another repository.
 
+### 11D: Deferred vector/FTS cleanup — diagnose before rebuilding
+
+**When to use:** A cleanup step failed, `.repowise/cleanup-debt.json` is nonempty/unreadable, or orphans correspond to a previously swept page such as an SCC/symbol rather than 11C's template file-page tombstones.
+
+**Why:** The pinned fork records exact failed `fts`/`vectors` deletions after SQL persistence and can retry them when the persistence path runs. That is not a missing-embedding problem. An unchanged-HEAD/config no-op update does **not** guarantee replay: its idle path does not consult/drain cleanup debt. Current regression evidence covers a repeated persistence pass, not that idle CLI route. This recipe is diagnosis only; it does not authorize another update, a ledger edit, delete API calls or a rebuild.
+
+Read the existing ledger without importing RepoWise or calling an embedder:
+
+```bash
+python3 - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+path = Path('.repowise/cleanup-debt.json')
+if not path.exists():
+    print('No saved cleanup ledger; inspect the original cleanup error and actual ID sets.')
+else:
+    if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+        raise SystemExit('STOP: unsafe/oversized cleanup ledger; use bounded native diagnosis.')
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise SystemExit('STOP: malformed cleanup ledger; preserve evidence, do not overwrite it.')
+    print('ledger_sha256=' + hashlib.sha256(raw).hexdigest())
+    for kind in ('fts', 'vectors'):
+        ids = data.get(kind, [])
+        if not isinstance(ids, list) or any(not isinstance(x, str) for x in ids):
+            raise SystemExit('STOP: invalid cleanup ID set: ' + kind)
+        ids = sorted(set(ids))
+        print(kind + ': count=' + str(len(ids)))
+        print(json.dumps(ids, ensure_ascii=False))
+PY
+```
+
+Keep the exact IDs, original degraded/error output and current SQL/FTS/vector identities as evidence; route long ID output through bounded host tools. Revalidate whether each ID is truly obsolete or is now live again. Missing/unreadable or empty debt is not proof of healthy stores. Report the required delete-only scope and request a separately approved, tested recovery route; do not invent a CLI flag or promise that an identical no-op update will drain it. 11C may be used only if all its own exact eligibility gates are independently satisfied. Choose 11B only when a rebuild is actually justified and explicitly approved. Pending nonempty debt remains a disclosed unresolved condition until its IDs are accounted for; never clear the file to manufacture success.
+
 ## Recipe 12: Register and operate a multi-repo workspace
 
 **When to use:** Two or more repositories have their own healthy RepoWise indexes and one MCP server must expose them by alias, or an existing RepoWise workspace must update all repos or one named repo.
@@ -1098,7 +1177,7 @@ Apply revalidates the receipt and live eligibility before deleting. Require the 
 
 ### 12A: Inspect before creating or changing a workspace
 
-For every proposed repository, resolve its canonical path and verify its existing index first:
+For every proposed repository, resolve its canonical path and verify its existing index first. Apply the mandatory gates before the CLI block; workspace membership does not repair a stored root mismatch:
 
 ```bash
 git -C <REPO_ROOT> rev-parse --show-toplevel
@@ -1161,10 +1240,12 @@ Fully restart ChatGPT/Codex so the old MCP process exits. Through RepoWise MCP, 
 
 ### 12C: Synchronize workspace indexes
 
+Apply the common identity, WIP, cleanup-debt and write-boundary gates to every selected child before a workspace command. A blocked child's state is not permission to update the other children or change the selection silently.
+
 All stale configured repositories:
 
 ```bash
-repowise update <WORKSPACE_ROOT> \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
   --workspace \
   --no-agents
 ```
@@ -1172,7 +1253,7 @@ repowise update <WORKSPACE_ROOT> \
 Guarantee no provider-dependent work:
 
 ```bash
-repowise update <WORKSPACE_ROOT> \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
   --workspace \
   --no-agents \
   --index-only
@@ -1181,7 +1262,7 @@ repowise update <WORKSPACE_ROOT> \
 Only one configured alias:
 
 ```bash
-repowise update <WORKSPACE_ROOT> \
+REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
   --repo <REPO_ALIAS> \
   --no-agents
 ```
@@ -1200,7 +1281,10 @@ For model-written prose, run Recipe 2, 2A, 2B, 5, 6, or 8A against the selected 
 
 ## Common mistakes and stop conditions
 
-- Do not interpret fail-closed as “stop all checks.” After any partial result, finish the mandatory read-only persistence, contamination, status, doctor, version-history, and generation-job diagnostics; block only further mutations.
+- Do not interpret fail-closed as “stop all checks.” For a readable, compatible index and approved access scope, finish the applicable persistence, contamination, status, doctor, version-history and checkpoint diagnostics after a partial result; block further mutations. The corruption exception below governs unsafe CLI access.
+- Exception to CLI postchecks: SQLite corruption or unresolved database readability requires native read-only diagnosis first, not status/doctor/MCP access. Resume those tools only after the approved recovery/readability and runtime-identity gates pass.
+- Before ordinary update/generate, establish the live source/WIP boundary and stored repository path identity. No `--working-tree` is not a committed-blob guarantee; a successful read fallback is not a relocation repair.
+- `--no-agents` and the editor-preservation environment variable do not suppress every hook path. Under a strict `.repowise/**`-only policy, unresolved coverage-hook side effects block the preview/update instead of permitting edits to settings.
 - Do not treat `repowise update --full` as universal concept regeneration. In RepoWise 0.59 its dry-run is safe, but the real command is a single-repository fast-to-full upgrade; existing concept prose still requires `generate`.
 - Do not use SQL `generation_jobs` as the primary record of a real `generate`/`restyle`. Inspect the exact `.repowise/jobs/*.json` checkpoint first; a SQL `cli_update` row may be newer but unrelated.
 - Do not accept `status=completed` or exit code zero when checkpoint accounting violates `planned = completed + failed + skipped`. Treat positive or named `unaccounted` pages as implicit skips.
@@ -1213,6 +1297,7 @@ For model-written prose, run Recipe 2, 2A, 2B, 5, 6, or 8A against the selected 
 - Do not infer `<BASE_COMMIT>` from another task, branch, checkout, transcript, or worktree.
 - Do not run `doctor --repair` automatically.
 - Do not run `reindex` after every successful update or generation; use Recipe 11 only for observed vector drift, embedding failure, vector-store recovery, or an intentional embedder/model change.
+- Inspect cleanup-debt and prior swept-ID cleanup failures under 11D before selecting reindex. A same-HEAD no-op is not proof that deferred deletions ran; do not edit the ledger or force an unrelated update to drain it.
 - Do not expect `init --no-prose` in RepoWise 0.59 to ask for an embedder. It is a non-interactive path: resolve the user's auto/explicit/mock policy before the run. Pass `--embedder ollama` and create an Ollama model entry only when the user selected them; otherwise preserve and verify the saved auto-selected embedder.
 - Current 0.59 `--no-editor-setup` covers machine registration, project editor files and post-commit hooks. Recipes retain explicit `--no-claude-md --no-agents --no-codex --no-distill-hook` as defense in depth; never enable hooks implicitly.
 - Do not assume generic orphan pruning. Recipe 11C is only for its independently verified template-file tombstones and approved exact IDs; other diagnosed orphan/damaged-store cases require the separately approved Recipe 11B or another explicit recovery plan.
