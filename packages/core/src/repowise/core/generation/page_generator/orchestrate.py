@@ -115,6 +115,7 @@ class _GenerationRun:
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
         job_checkpoint_out: dict[str, Any] | None = None,
+        on_embed_items: Callable[[list[tuple[str, str, dict]], bool], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -154,6 +155,7 @@ class _GenerationRun:
         self.on_subphase = on_subphase
         self.on_warning = on_warning
         self.on_embed = on_embed
+        self.on_embed_items = on_embed_items
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -629,6 +631,15 @@ class _GenerationRun:
         self, named_coros: list[tuple[str, Any]], level: int
     ) -> list[GeneratedPage]:
         """Run one level's coroutines under the shared semaphore + embed batch."""
+
+        def notify_items(items, completed):
+            callback = getattr(self, "on_embed_items", None)
+            if callback is not None:
+                try:
+                    callback(items, completed)
+                except Exception as exc:
+                    log.warning("on_embed_items.failed", error=str(exc))
+
         try:
             with timed(self.timings, f"generation.level{level}"):
                 with timed(self.timings, "generation.checkpoint"):
@@ -750,7 +761,9 @@ class _GenerationRun:
                         self.on_embed(len(embed_items), False)
                     with timed(self.timings, "generation.embed"):
                         try:
+                            notify_items(embed_items, False)
                             await self.vector_store.embed_batch(embed_items)
+                            notify_items(embed_items, True)
                             if self.on_embed is not None:
                                 self.on_embed(len(embed_items), True)
                         except Exception as e:
@@ -762,13 +775,30 @@ class _GenerationRun:
                             failed_items = embed_items
                             if isinstance(e, BatchEmbeddingError):
                                 failed_items = list(e.failed_items)
+                                failed_ids = {item[0] for item in failed_items}
+                                notify_items(
+                                    [item for item in embed_items if item[0] not in failed_ids],
+                                    True,
+                                )
                                 try:
+                                    notify_items(failed_items, False)
                                     await self.vector_store.embed_batch(failed_items)
                                 except Exception as retry_error:
                                     e = retry_error
                                     if isinstance(retry_error, BatchEmbeddingError):
-                                        failed_items = list(retry_error.failed_items)
+                                        remaining = list(retry_error.failed_items)
+                                        remaining_ids = {item[0] for item in remaining}
+                                        notify_items(
+                                            [
+                                                item
+                                                for item in failed_items
+                                                if item[0] not in remaining_ids
+                                            ],
+                                            True,
+                                        )
+                                        failed_items = remaining
                                 else:
+                                    notify_items(failed_items, True)
                                     failed_items = []
                                     if self.on_embed is not None:
                                         self.on_embed(len(embed_items), True)

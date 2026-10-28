@@ -15,7 +15,10 @@ enrichment. All three are prompting, and this path has no model.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,79 @@ from repowise.cli.helpers import console, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
+
+
+@dataclass
+class EmbeddingCompletion:
+    """Latest current-run payloads for explicit Ollama + the same LanceDB target.
+
+    Unknown providers, ambient selection, or different model/endpoint/table
+    retain native re-embedding. No connection or client crosses event loops.
+    """
+
+    provenance: tuple | None = None
+    payloads: dict[str, str] = field(default_factory=dict)
+
+    @staticmethod
+    def store_identity(store: Any) -> tuple | None:
+        # Only the concrete local path/model contract verified here. Other
+        # providers keep native re-embedding rather than guessing identity.
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
+        from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+        try:
+            if not isinstance(store, LanceDBVectorStore) or not isinstance(
+                store._embedder, OllamaEmbedder
+            ):
+                return None
+            embedder = store._embedder
+            return (
+                str(Path(store._db_path).resolve()),
+                store._table_name,
+                embedder._model,
+                embedder._base_url,
+                embedder._requested_dimensions,
+                embedder.dimensions,
+            )
+        except Exception:
+            # An optional optimization must not make a native write fail.
+            return None
+
+    def bind(self, store: Any, cfg: dict) -> None:
+        identity = self.store_identity(store) if cfg.get("embedder") == "ollama" else None
+        if self.provenance != identity:
+            self.payloads.clear()
+        self.provenance = identity
+
+    def compatible(self, store: Any) -> bool:
+        return self.provenance is not None and self.provenance == self.store_identity(store)
+
+    @staticmethod
+    def fingerprint(item: tuple[str, str, dict]) -> str | None:
+        try:
+            return hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
+        except Exception:
+            return None
+
+    def matches(self, item: tuple[str, str, dict]) -> bool:
+        fingerprint = self.fingerprint(item)
+        return fingerprint is not None and self.payloads.get(item[0]) == fingerprint
+
+    def record(self, items: list[tuple[str, str, dict]], completed: bool) -> None:
+        if completed:
+            # Compute before mutating so an unsupported payload cannot leave
+            # a partly recorded batch after the callback raises.
+            receipts = {item[0]: self.fingerprint(item) for item in items}
+            for page_id, fingerprint in receipts.items():
+                if fingerprint is None:
+                    self.payloads.pop(page_id, None)
+                else:
+                    self.payloads[page_id] = fingerprint
+        else:
+            # A new attempt may partially overwrite a previous payload even
+            # if it ultimately raises. Historical successes are no proof.
+            for item in items:
+                self.payloads.pop(item[0], None)
 
 
 def deterministic_embedder_name(cfg: dict) -> str:
@@ -143,6 +219,7 @@ def regenerate_deterministic_pages(
     prior_page_ids: dict | None = None,
     full_scope: bool = False,
     stats_out: dict[str, int] | None = None,
+    embedding_completion: EmbeddingCompletion | None = None,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -171,6 +248,7 @@ def regenerate_deterministic_pages(
         degrade_label="Template page refresh",
         full_scope=full_scope,
         stats_out=stats_out,
+        embedding_completion=embedding_completion,
     )
 
 
@@ -190,6 +268,7 @@ def regenerate_deterministic_page_ids(
     prior_page_ids: dict | None = None,
     vector_store: Any = None,
     stats_out: dict[str, int] | None = None,
+    embedding_completion: EmbeddingCompletion | None = None,
 ) -> list:
     """Render exact deterministic page ids from the complete repository view.
 
@@ -218,6 +297,7 @@ def regenerate_deterministic_page_ids(
         only_page_ids=page_ids,
         vector_store=vector_store,
         stats_out=stats_out,
+        embedding_completion=embedding_completion,
     )
 
 
@@ -240,6 +320,7 @@ def _render_pages(
     only_page_ids: set[str] | None = None,
     vector_store: Any = None,
     stats_out: dict[str, int] | None = None,
+    embedding_completion: EmbeddingCompletion | None = None,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -328,6 +409,9 @@ def _render_pages(
                 degraded.append(f"Page embedding: {exc}")
                 return []
 
+        if embedding_completion is not None:
+            embedding_completion.bind(resolved_vector_store, cfg)
+
         generator = PageGenerator(
             TemplateProvider(),
             ContextAssembler(config, repo_path=repo_path),
@@ -358,6 +442,9 @@ def _render_pages(
                     persisted_page_ids=existing_repairs,
                     # Without it a failed embed was logged and nothing else.
                     on_warning=degraded.append,
+                    on_embed_items=(
+                        embedding_completion.record if embedding_completion is not None else None
+                    ),
                 )
             )
         if stats_out is not None:

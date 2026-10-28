@@ -57,6 +57,7 @@ from repowise.core.reasoning import REASONING_MODES
 from .config_changes import classify_config_changes
 from .decision_passes import _run_decision_evolution as _run_decision_evolution
 from .decision_passes import run_decision_passes
+from .deterministic import EmbeddingCompletion
 from .incremental import (
     _build_update_vector_store,
     _load_stored_function_mod_p80,
@@ -1653,6 +1654,7 @@ class _TemplatePages:
     docs_mode: str
     pages: list = field(default_factory=list)
     render_stats: dict[str, int] = field(default_factory=dict)
+    embedding_completion: EmbeddingCompletion = field(default_factory=EmbeddingCompletion)
     # False after a failed renderer-driven render: keep the old stamp and pages.
     renderer_render_ok: bool = True
     preserved_page_ids: set[str] = field(default_factory=set)
@@ -1795,6 +1797,7 @@ def _render_template_page_set(
         prior_page_ids=prior_ids,
         full_scope=full_scope,
         stats_out=out.render_stats,
+        embedding_completion=out.embedding_completion,
     )
     if run.stale_deterministic_ids and not full_scope:
         pages.extend(
@@ -1812,6 +1815,7 @@ def _render_template_page_set(
                 dead_code_report=run.dead_code_report,
                 prior_page_ids=prior_ids,
                 stats_out=out.render_stats,
+                embedding_completion=out.embedding_completion,
             )
         )
     return pages
@@ -1875,7 +1879,7 @@ def _config_vector_store(run: UpdateRun, pages: _TemplatePages, template_wiki: b
         required=(config.rebuild_required and template_wiki),
     )
     if config.generation_changed and pages.pages and vector_store is not None:
-        _embed_config_pages(vector_store, pages.pages)
+        _embed_config_pages(vector_store, pages.pages, pages.embedding_completion)
     return vector_store
 
 
@@ -1891,9 +1895,14 @@ def _full_generation_page_ids(
     return None
 
 
-def _embed_config_pages(vector_store, pages: list) -> None:
+def _embed_config_pages(
+    vector_store, pages: list, completion: EmbeddingCompletion | None = None
+) -> None:
     from repowise.core.persistence.vector_store import embed_item
 
+    compatible_completion = (
+        completion if completion is not None and completion.compatible(vector_store) else None
+    )
     embed_items = [
         item
         for page in pages
@@ -1910,7 +1919,12 @@ def _embed_config_pages(vector_store, pages: list) -> None:
             )
         )
         is not None
+        and not (compatible_completion is not None and compatible_completion.matches(item))
     ]
+    if not embed_items:
+        return
+    if completion is not None:
+        completion.record(embed_items, False)
     try:
         run_async(vector_store.embed_batch(embed_items))
     except Exception as exc:
@@ -1918,6 +1932,8 @@ def _embed_config_pages(vector_store, pages: list) -> None:
             "Configuration-driven vector refresh failed; the previous "
             "fingerprint was retained so the next update retries."
         ) from exc
+    if compatible_completion is not None:
+        compatible_completion.record(embed_items, True)
 
 
 def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:

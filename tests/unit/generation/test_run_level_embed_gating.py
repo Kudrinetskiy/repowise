@@ -131,6 +131,11 @@ def test_partial_batch_retries_only_failed_ids_once(recovery, failed_count, stag
     store = PartialStore(persists=True)
     warnings = []
     gen = SimpleNamespace(embed_failed_pages=0)
+    completed: set[str] = set()
+
+    def record(items, finished):
+        ids = {item[0] for item in items}
+        completed.update(ids) if finished else completed.difference_update(ids)
 
     async def go():
         async def page(page_id):
@@ -139,6 +144,7 @@ def test_partial_batch_retries_only_failed_ids_once(recovery, failed_count, stag
         run = _fake_run(store)
         run.gen = gen
         run.on_warning = warnings.append
+        run.on_embed_items = record
         await _GenerationRun.run_level(
             run, [(pid, page(pid)) for pid in ("ok.py", "retry.py", "last.py")], level=2
         )
@@ -149,6 +155,13 @@ def test_partial_batch_retries_only_failed_ids_once(recovery, failed_count, stag
         ["retry.py", "last.py"],
     ]
     assert gen.embed_failed_pages == failed_count
+    assert completed == (
+        {"ok.py", "retry.py", "last.py"}
+        if failed_count == 0
+        else {"ok.py", "retry.py"}
+        if failed_count == 1
+        else {"ok.py"}
+    )
     if failed_count:
         assert len(warnings) == 1
         assert "last.py" in warnings[0]
@@ -156,6 +169,80 @@ def test_partial_batch_retries_only_failed_ids_once(recovery, failed_count, stag
         assert "ok.py" not in warnings[0]
     else:
         assert warnings == []
+
+
+def test_latest_embedding_receipt_does_not_reuse_an_overwritten_payload(tmp_path) -> None:
+    from repowise.cli.commands.update_cmd.command import _embed_config_pages
+    from repowise.cli.commands.update_cmd.deterministic import EmbeddingCompletion
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+    texts_sent = []
+
+    class LocalEmbedder(OllamaEmbedder):
+        def __init__(self):
+            super().__init__(model="fixture", dimensions=8)
+
+        async def embed(self, texts):
+            texts_sent.extend(texts)
+            return await MockEmbedder().embed(texts)
+
+    completion = EmbeddingCompletion()
+    store = LanceDBVectorStore(str(tmp_path / "vectors"), LocalEmbedder())
+    completion.bind(store, {"embedder": "ollama"})
+    old_page = _page("same.py")
+    new_page = _page("same.py")
+    new_page.content = "A later successfully written payload"
+
+    async def go():
+        run = _fake_run(store)
+        run.on_embed_items = completion.record
+        for page in (old_page, new_page):
+
+            async def ready(page=page):
+                return page
+
+            await _GenerationRun.run_level(run, [(page.page_id, ready())], level=2)
+        await store.close()
+
+    asyncio.run(go())
+    # Returning to an earlier payload must write again: the store currently
+    # contains the newer one. A set of any historical success would skip it.
+    final_store = LanceDBVectorStore(str(tmp_path / "vectors"), LocalEmbedder())
+    _embed_config_pages(final_store, [old_page], completion)
+    assert len(texts_sent) == 3
+    assert texts_sent[0] == texts_sent[2] != texts_sent[1]
+
+    async def read():
+        await final_store._ensure_connected()
+        rows = await final_store._table.query().to_list()
+        await final_store.close()
+        return rows
+
+    assert asyncio.run(read())[0]["content_snippet"] == old_page.content
+
+
+def test_embed_receipt_callback_failure_does_not_mask_embedding_failure() -> None:
+    calls = []
+
+    async def go():
+        async def page():
+            return _page("failed.py")
+
+        def callback(items, completed):
+            calls.append(completed)
+            raise RuntimeError("receipt callback failed")
+
+        run = _fake_run(_FailingStore())
+        run.gen = SimpleNamespace(embed_failed_pages=0)
+        run.on_warning = lambda _warning: None
+        run.on_embed_items = callback
+        await _GenerationRun.run_level(run, [("failed.py", page())], level=2)
+        return run.gen.embed_failed_pages
+
+    assert asyncio.run(go()) == 1
+    assert calls == [False]
 
 
 def test_a_failed_embed_is_counted_on_the_generator() -> None:

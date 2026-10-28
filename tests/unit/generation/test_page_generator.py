@@ -612,8 +612,28 @@ async def test_generate_all_returns_pages(tmp_path):
         builder,
         repo,
         "test-repo",
-        job_system=JobSystem(tmp_path / "jobs"),
-        job_checkpoint_out=checkpoint_out,
+        # Preserve the public pre-callback positional API through its old
+        # final checkpoint argument, not only keyword callers.
+        JobSystem(tmp_path / "jobs"),
+        None,  # on_page_done
+        None,  # on_total_known
+        None,  # on_subphase
+        None,  # git_meta_map
+        False,  # resume
+        None,  # repo_path
+        None,  # dead_code_report
+        None,  # decision_report
+        None,  # external_systems
+        None,  # on_page_ready
+        None,  # kg_modules
+        None,  # kg_data
+        None,  # only_page_ids
+        None,  # preserved_page_ids
+        None,  # timings
+        None,  # on_warning
+        None,  # persisted_page_ids
+        None,  # on_embed
+        checkpoint_out,
     )
     assert len(pages) >= 1
     cp = checkpoint_out["checkpoint"]

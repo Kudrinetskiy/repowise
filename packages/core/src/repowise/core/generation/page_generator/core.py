@@ -259,6 +259,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
         job_checkpoint_out: dict[str, Any] | None = None,
+        on_embed_items: Callable[[list[tuple[str, str, dict]], bool], None] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -296,6 +297,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
 
         ``on_embed(count, finished)`` brackets each batched embed of ``count``
         pages, so a display can show embedding as its own step.
+
+        ``on_embed_items(items, completed)`` observes actual store attempts
+        and confirmed writes. False invalidates prior receipts before each
+        attempt; True reports only confirmed successful items, including
+        partial batch writes and targeted recovery. Callback errors are logged.
         """
         from .orchestrate import run_generate_all
 
@@ -335,6 +341,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             on_warning=on_warning,
             persisted_page_ids=persisted_page_ids,
             on_embed=on_embed,
+            on_embed_items=on_embed_items,
             job_checkpoint_out=job_checkpoint_out,
         )
 

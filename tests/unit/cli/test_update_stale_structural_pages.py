@@ -1143,6 +1143,110 @@ def test_idle_renderer_scan_reports_unverified_cache_without_reading_source(
         assert "no safe indexed subject" in output
 
 
+@pytest.mark.parametrize("final_change", ["none", "content", "title", "different_model"])
+def test_config_refresh_embeds_each_completed_payload_once(
+    tmp_path: Path, monkeypatch, final_change
+) -> None:
+    from collections import Counter
+
+    import yaml
+
+    from repowise.cli.helpers import run_async
+    from repowise.core.generation.page_generator.orchestrate import _GenerationRun
+    from repowise.core.persistence.vector_store import LanceDBVectorStore, embed_item
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = _init_repo(tmp_path, extra_files={"other.py": "def other():\n    return 2\n"})
+    _stabilize_fixture(repo)
+
+    texts_sent: list[str] = []
+    built_embedders = []
+
+    class CountingEmbedder(OllamaEmbedder):
+        def __init__(self, model):
+            super().__init__(model=model, dimensions=8)
+
+        async def embed(self, texts):
+            texts_sent.extend(texts)
+            return await MockEmbedder().embed(texts)
+
+    def build_embedder(*_args):
+        model = (
+            "other-model"
+            if final_change == "different_model" and built_embedders
+            else "fixture-model"
+        )
+        embedder = CountingEmbedder(model)
+        built_embedders.append(embedder)
+        return embedder
+
+    monkeypatch.setattr("repowise.cli.providers.build_embedder", build_embedder)
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.deterministic.deterministic_embedder_name",
+        lambda _cfg: "ollama",
+    )
+    original_finalize = _GenerationRun._finalize
+
+    def finalize(run, pages):
+        pages = original_finalize(run, pages)
+        target = next(page for page in pages if page.page_id == "file_page:main.py")
+        if final_change == "content":
+            target.content = "# Final content\n\nFINALPAYLOADMARKER\n" + target.content
+        elif final_change == "title":
+            target.title = "FINALPAYLOADTITLE"
+        return pages
+
+    monkeypatch.setattr(_GenerationRun, "_finalize", finalize)
+    config_path = repo / ".repowise/config.yaml"
+    cfg = yaml.safe_load(config_path.read_text())
+    cfg["enable_onboarding"] = False
+    cfg["embedder"] = "ollama"
+    config_path.write_text(yaml.safe_dump(cfg))
+    result = CliRunner().invoke(
+        cli, ["update", str(repo), "--index-only", "--no-workspace", "--no-agents"]
+    )
+    assert result.exit_code == 0, result.output
+    # Each distinct provider input earns one completed write, including an
+    # explicitly changed final payload. ID-only suppression misses that delta.
+    assert len(built_embedders) == 2
+    assert texts_sent
+    assert set(Counter(texts_sent).values()) == ({2} if final_change == "different_model" else {1})
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        row = dict(db.execute("SELECT * FROM wiki_pages WHERE id='file_page:main.py'").fetchone())
+    store = LanceDBVectorStore(str(repo / ".repowise/lancedb"), MockEmbedder())
+
+    async def vector_row():
+        await store._ensure_connected()
+        rows = await store._table.query().where("page_id = 'file_page:main.py'").to_list()
+        await store.close()
+        return rows[0]
+
+    vector = run_async(vector_row())
+    final_item = embed_item(
+        row["id"],
+        title=row["title"],
+        page_type=row["page_type"],
+        target_path=row["target_path"],
+        summary=row["summary"],
+        content=row["content"],
+        digest=row["digest"],
+        page_metadata=row["metadata_json"],
+    )
+    assert final_item[1] in texts_sent
+    assert vector["vector"] == pytest.approx(run_async(MockEmbedder().embed([final_item[1]]))[0])
+    assert vector["title"] == row["title"]
+    assert vector["content_snippet"] == row["content"][:2000]
+    if final_change == "content":
+        assert "FINALPAYLOADMARKER" in row["content"]
+        assert any("FINALPAYLOADMARKER" in text for text in texts_sent)
+    elif final_change == "title":
+        assert row["title"] == "FINALPAYLOADTITLE"
+        assert any("FINALPAYLOADTITLE" in text for text in texts_sent)
+
+
 def test_full_scope_config_update_repairs_retained_spotlights_in_one_pass(
     tmp_path: Path, monkeypatch
 ) -> None:
