@@ -232,6 +232,69 @@ def test_restyle_keeps_sql_fulltext_and_vector_content_consistent(tmp_path: Path
     restyle_cmd.run_async(check_persisted_pages())
 
 
+def test_restyle_does_not_restore_deleted_pages_to_fulltext_search(tmp_path: Path) -> None:
+    """Restyling live prose must not make an old deleted file searchable again."""
+    _init_tiny_index(tmp_path)
+
+    async def check_deleted_page() -> None:
+        from datetime import UTC, datetime
+
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            FullTextSearch,
+            create_engine,
+            create_session_factory,
+            get_session,
+            upsert_repository,
+        )
+        from repowise.core.persistence.models import Page
+
+        engine = create_engine(get_db_url_for_repo(tmp_path))
+        deleted_id = "file_page:deleted.py"
+        marker = "DeletedRestyleSearchSentinel"
+        try:
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=tmp_path.name, local_path=str(tmp_path)
+                )
+                session.add(
+                    Page(
+                        id=deleted_id,
+                        repository_id=repo.id,
+                        page_type="file_page",
+                        title="Deleted module",
+                        content=f"# {marker}\n\n" + "Former module behavior and usage. " * 20,
+                        target_path="deleted.py",
+                        source_hash="old-deleted-source",
+                        model_name="old-model",
+                        provider_name="old-provider",
+                        freshness_status="tombstone",
+                        created_at=datetime(2020, 1, 1, tzinfo=UTC),
+                        updated_at=datetime(2020, 1, 1, tzinfo=UTC),
+                    )
+                )
+                await session.commit()
+
+            fts = FullTextSearch(engine)
+            await fts.ensure_index()
+            assert not await fts.search(marker)
+
+            await restyle_cmd._run_restyle(
+                tmp_path, MockProvider(), _generation_config(tmp_path), exclude_patterns=[]
+            )
+
+            async with get_session(sf) as session:
+                deleted = await session.get(Page, deleted_id)
+                assert deleted is not None
+                assert deleted.freshness_status == "tombstone"
+            assert not await fts.search(marker)
+        finally:
+            await engine.dispose()
+
+    restyle_cmd.run_async(check_deleted_page())
+
+
 def test_wiki_styles_lists_builtins(tmp_path):
     result = CliRunner().invoke(cli, ["wiki-styles", str(tmp_path)])
     assert result.exit_code == 0

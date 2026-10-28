@@ -150,7 +150,9 @@ async def _run_restyle(
 
     async with get_session(sf) as session:
         await upsert_pages_from_generated(session, generated_pages, repo_id)
-        persisted_pages = await list_pages(session, repo_id, limit=100_000)
+        persisted_pages = await list_pages(
+            session, repo_id, include_tombstones=False, limit=100_000
+        )
         total_tokens = sum(
             (page.input_tokens or 0) + (page.output_tokens or 0) for page in persisted_pages
         )
