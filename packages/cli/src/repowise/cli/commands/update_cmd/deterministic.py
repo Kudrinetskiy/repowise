@@ -517,7 +517,11 @@ async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
 
         async with get_session(create_session_factory(engine)) as session:
             rows = await session.execute(
-                sa_select(Page.id, Page.metadata_json).where(Page.page_type == "file_page")
+                sa_select(Page.id, Page.metadata_json).where(
+                    Page.page_type == "file_page",
+                    Page.provider_name == "template",
+                    Page.freshness_status != "tombstone",
+                )
             )
             keys: dict[str, str] = {}
             for pid, meta_json in rows:
@@ -614,7 +618,9 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         async with get_session(create_session_factory(engine)) as session:
             rows = await session.execute(
                 sa_select(Page.target_path, Page.metadata_json).where(
-                    Page.page_type == "symbol_spotlight"
+                    Page.page_type == "symbol_spotlight",
+                    Page.provider_name == "template",
+                    Page.freshness_status != "tombstone",
                 )
             )
             keys: dict[str, list[str]] = {}

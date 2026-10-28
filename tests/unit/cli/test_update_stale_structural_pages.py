@@ -701,3 +701,212 @@ def test_added_markdown_doc_becomes_searchable_file_page(tmp_path: Path) -> None
     assert row is not None, output
     assert marker in str(row[0])
     assert fts_count is not None and int(fts_count[0]) >= 1
+
+
+@pytest.mark.parametrize("page_type", ["file_page", "symbol_spotlight"])
+@pytest.mark.parametrize("new_commit", [True, False], ids=["scheduled", "idle"])
+def test_per_page_renderer_debt_is_repaired_then_idle_without_global_change(
+    tmp_path: Path, monkeypatch, page_type: str, new_commit: bool
+) -> None:
+    from repowise.cli.commands.update_cmd.command import (
+        _current_renderer_fingerprint,
+        clear_update_queued,
+        release_update_lock,
+    )
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = _init_repo(tmp_path)
+    _stabilize_fixture(repo)
+    _set_llm_docs_mode(repo)
+    state_path = repo / ".repowise/state.json"
+    state = json.loads(state_path.read_text())
+    global_key = _current_renderer_fingerprint(repo)
+    state["renderer_fingerprint"] = global_key
+    state_path.write_text(json.dumps(state))
+    # Init runs in a subprocess; align this process with the per-test HOME key.
+    from repowise.core.cache_seal import reset_key_cache_for_tests
+
+    reset_key_cache_for_tests()
+    old_key = "obsolete-per-page-renderer-key"
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        target = dict(
+            db.execute(
+                "SELECT * FROM wiki_pages WHERE page_type=? LIMIT 1", (page_type,)
+            ).fetchone()
+        )
+        metadata = json.loads(target["metadata_json"])
+        metadata["render_key"] = old_key
+        db.execute(
+            "UPDATE wiki_pages SET metadata_json=? WHERE id=?", (json.dumps(metadata), target["id"])
+        )
+        # One scenario also protects the idle scanner's exclusion and missing-source paths.
+        extra_rows = {}
+        for label, provider, freshness in [
+            ("authored", "original-model", "fresh"),
+            ("retired", "template", "tombstone"),
+            ("missing", "template", "fresh"),
+        ]:
+            if label == "missing" and new_commit:
+                continue
+            row = {
+                **target,
+                "id": f"file_page:{label}.py",
+                "page_type": "file_page",
+                "target_path": f"{label}.py",
+                "provider_name": provider,
+                "freshness_status": freshness,
+                "metadata_json": json.dumps(metadata),
+            }
+            if label == "authored":
+                row.update(
+                    content="Preserve model prose",
+                    digest="Preserve model digest",
+                    model_name="original-model",
+                    input_tokens=17,
+                    output_tokens=9,
+                )
+            db.execute(
+                f"INSERT INTO wiki_pages ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                list(row.values()),
+            )
+            extra_rows[label] = row
+    if new_commit:
+        (repo / "other.py").write_text("def unrelated():\n    return 7\n")
+        _git(repo, "add", "other.py")
+        _git(
+            repo,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "unrelated change wakes update",
+        )
+
+    def no_model(*_a, **_k):
+        raise AssertionError("structural key repair must not resolve a model")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", no_model
+    )
+    args = ["update", str(repo), "--index-only", "--no-workspace", "--no-agents"]
+    first = CliRunner().invoke(cli, args)
+    assert first.exit_code == 0, first.output
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        db.row_factory = sqlite3.Row
+        repaired = dict(
+            db.execute("SELECT * FROM wiki_pages WHERE id=?", (target["id"],)).fetchone()
+        )
+        assert json.loads(repaired["metadata_json"])["render_key"] != old_key, first.output
+        assert repaired["freshness_status"] == "fresh"
+        for label in extra_rows:
+            row = dict(
+                db.execute(
+                    "SELECT * FROM wiki_pages WHERE id=?", (extra_rows[label]["id"],)
+                ).fetchone()
+            )
+            if label == "authored":
+                for field in [
+                    "content",
+                    "digest",
+                    "model_name",
+                    "provider_name",
+                    "created_at",
+                    "updated_at",
+                    "input_tokens",
+                    "output_tokens",
+                ]:
+                    assert row[field] == extra_rows[label][field]
+                assert row["freshness_status"] == "fresh"
+            else:
+                assert row["freshness_status"] == "tombstone"
+    release_update_lock(repo)
+    clear_update_queued(repo)
+    retry = CliRunner().invoke(cli, args)
+    assert retry.exit_code == 0, retry.output
+    assert "Already up to date" in retry.output
+    updated = json.loads(state_path.read_text())
+    assert updated.get("last_docs_commit") == state.get("last_docs_commit")
+    assert updated["renderer_fingerprint"] == global_key
+    # The idle check compares persisted ingestion subjects, not source-only WIP.
+    before_wip = (repaired["updated_at"], json.loads(repaired["metadata_json"])["render_key"])
+    (repo / "main.py").write_text("def unsaved_product_change():\n    return 99\n")
+    wip = CliRunner().invoke(cli, args)
+    assert wip.exit_code == 0, wip.output
+    assert "Already up to date" in wip.output
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        current = db.execute(
+            "SELECT updated_at, metadata_json FROM wiki_pages WHERE id=?", (target["id"],)
+        ).fetchone()
+    assert (current[0], json.loads(current[1])["render_key"]) == before_wip
+    (repo / "main.py").unlink()
+    deletion_wip = CliRunner().invoke(cli, args)
+    assert deletion_wip.exit_code == 0, deletion_wip.output
+    assert "Already up to date" in deletion_wip.output
+    with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+        assert db.execute(
+            "SELECT freshness_status FROM wiki_pages WHERE id=?", (target["id"],)
+        ).fetchone() == ("fresh",)
+
+
+@pytest.mark.parametrize(
+    "cache_state", ["corrupt", "oversize", "escape", "deleted-stale", "special"]
+)
+def test_idle_renderer_scan_reports_unverified_cache_without_reading_source(
+    tmp_path: Path, monkeypatch, capsys, cache_state: str
+) -> None:
+    from repowise.cli.commands.update_cmd.command import _idle_stale_renderer_paths
+    from repowise.core.cache_seal import reset_key_cache_for_tests
+
+    repo = _init_repo(tmp_path)
+    reset_key_cache_for_tests()
+    cache = repo / ".repowise/parse_cache.pkl"
+    if cache_state == "corrupt":
+        cache.write_bytes(b"not an authenticated cache")
+    elif cache_state == "oversize":
+        with cache.open("r+b") as handle:
+            handle.truncate(256 * 1024 * 1024 + 1)
+    elif cache_state == "special":
+        cache.unlink()
+        os.mkfifo(cache)
+    elif cache_state == "escape":
+        # A source symlink must not be followed even with a valid signed subject.
+        original = repo / "main.py"
+        original.unlink()
+        outside = tmp_path / "outside.py"
+        outside.write_text("def never_read():\n    return 0\n")
+        original.symlink_to(outside)
+    else:
+        with sqlite3.connect(repo / ".repowise/wiki.db") as db:
+            db.execute(
+                "UPDATE wiki_pages SET metadata_json=? WHERE page_type='file_page'",
+                (json.dumps({"render_key": "obsolete"}),),
+            )
+        (repo / "main.py").unlink()
+    if cache_state in {"oversize", "special"}:
+
+        def forbidden_load(*_a, **_k):
+            pytest.fail("oversize or special idle cache must not be opened or unpickled")
+
+        monkeypatch.setattr("repowise.core.cache_seal.load_sealed_pickle", forbidden_load)
+
+    def forbidden_source_read(self, *args, **kwargs):
+        if self.suffix == ".py" and self.is_relative_to(tmp_path):
+            pytest.fail("idle renderer check must not read live source bytes")
+        return original_open(self, *args, **kwargs)
+
+    original_open = Path.open
+    monkeypatch.setattr(Path, "open", forbidden_source_read)
+
+    assert _idle_stale_renderer_paths(repo) == []
+    output = capsys.readouterr().out
+    if cache_state == "oversize":
+        assert "256 MiB idle-check limit" in output
+    elif cache_state == "special":
+        assert "not a confined regular cache" in output
+    elif cache_state == "corrupt":
+        assert "Could not check idle structural render keys" in output
+    else:
+        assert "no safe indexed subject" in output

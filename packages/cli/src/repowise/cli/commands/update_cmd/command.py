@@ -619,6 +619,98 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
         return []
 
 
+def _idle_stale_renderer_paths(repo_path: Path) -> list[str]:
+    """Check persisted subjects, not source-only WIP, before an idle exit.
+
+    The authenticated parse-cache envelope contains raw subject hashes in its
+    keys. Its per-file pickle blobs are deliberately never deserialized here.
+    """
+    from repowise.core.cache_seal import load_sealed_pickle
+    from repowise.core.generation.models import compute_page_id
+    from repowise.core.generation.page_generator.structural import (
+        FILE_PAGE_TEMPLATE,
+        SYMBOL_SPOTLIGHT_TEMPLATE,
+        structural_content_hash,
+        structural_fingerprint,
+    )
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
+
+    from .deterministic import load_file_page_render_keys, load_spotlight_render_keys
+
+    files = load_file_page_render_keys(repo_path)
+    spotlights = load_spotlight_render_keys(repo_path)
+    paths = {pid.removeprefix("file_page:") for pid in files} | set(spotlights)
+    if not paths:
+        return []
+    try:
+        cache_path = repo_path / ".repowise/parse_cache.pkl"
+        if (
+            cache_path.is_symlink()
+            or not cache_path.resolve().is_relative_to(repo_path.resolve())
+            or not cache_path.is_file()
+        ):
+            raise ValueError("parse cache is not a confined regular cache")
+        # A bounded envelope load, not an unbounded parse-cache audit.
+        if cache_path.stat().st_size > 256 * 1024 * 1024:
+            raise ValueError("parse cache exceeds the 256 MiB idle-check limit")
+        payload = load_sealed_pickle(cache_path, domain="parse_cache.pkl")
+        if payload.get("fingerprint") != parser_fingerprint():
+            raise ValueError("parse cache does not match the current parser")
+        subjects: dict[str, set[str]] = {}
+        for path, subject in payload.get("files", {}):
+            subjects.setdefault(path, set()).add(subject)
+        language, style_fp, template_dir = _renderer_inputs(repo_path)
+        kwargs = dict(language=language, style_fingerprint=style_fp, template_dir=template_dir)
+        file_fp = structural_fingerprint(FILE_PAGE_TEMPLATE, **kwargs)
+        spotlight_fp = structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, **kwargs)
+        root = repo_path.resolve()
+        stale, unknown = [], 0
+        head_tree = None
+        for path in sorted(paths):
+            source = root / path
+            if not source.resolve().is_relative_to(root) or source.is_symlink():
+                unknown += 1
+                continue
+            hashes = subjects.get(path, set())
+            stored = files.get(compute_page_id("file_page", path))
+            expected_files = {structural_content_hash(h, file_fp) for h in hashes}
+            expected_spots = {structural_content_hash(h, spotlight_fp) for h in hashes}
+            needs_render = (stored is not None and stored not in expected_files) or any(
+                key not in expected_spots for key in spotlights.get(path, [])
+            )
+            if hashes and not needs_render:
+                # A current indexed subject stays current even if source-only
+                # WIP edits or deletes its working-tree file.
+                continue
+            if not source.exists():
+                from git import Repo
+
+                if head_tree is None:
+                    head_tree = Repo(root).head.commit.tree
+                try:
+                    _ = head_tree / path
+                except KeyError:
+                    # Only a committed absence belongs to deleted-file repair.
+                    stale.append(path)
+                else:
+                    unknown += 1
+                continue
+            if not hashes:
+                unknown += 1
+                continue
+            if needs_render:
+                stale.append(path)
+        if unknown:
+            console.print(
+                f"[yellow]Could not verify idle structural render keys for {unknown} "
+                "target(s): no safe indexed subject.[/yellow]"
+            )
+        return stale
+    except Exception as exc:
+        console.print(f"[yellow]Could not check idle structural render keys: {exc}[/yellow]")
+        return []
+
+
 def _start_run(opts: UpdateOptions) -> UpdateRun:
     """Start the run clock and pick the progress output (rich or JSON events)."""
     # ``run`` is the denominator of every stage row; stages nest and overlap.
@@ -936,6 +1028,9 @@ def _assess_staleness(run: UpdateRun) -> None:
         from repowise.core.persistence import load_stale_update_targets
 
         run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(run.repo_path)
+        run.stale_db_paths = list(
+            dict.fromkeys([*run.stale_db_paths, *_idle_stale_renderer_paths(run.repo_path)])
+        )
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -1344,7 +1439,7 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _add_stale_pages(run, stale_renderer_paths)
     _widen_for_full_render(run)
     run.structural_refresh_paths = list(
-        dict.fromkeys([*run.stale_db_paths, *run.affected.decay_only])
+        dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths, *run.affected.decay_only])
     )
     _report_page_plan(run)
 
