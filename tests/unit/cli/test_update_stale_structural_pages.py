@@ -516,6 +516,140 @@ def test_structural_refresh_respects_explicit_docs_pointer_opt_out(
     assert updated["last_docs_commit"] == (old_docs_commit if preserve_docs_pointer else head)
 
 
+@pytest.mark.parametrize("route", ["single", "workspace", "selected"])
+@pytest.mark.parametrize("mode_flag", ["--index-only", "--no-docs"])
+def test_workspace_structural_update_refreshes_model_wiki_without_rewriting_prose(
+    tmp_path: Path, monkeypatch, route: str, mode_flag: str
+) -> None:
+    """Workspace graph sync must not leave existing file/symbol search cards behind."""
+    from repowise.core.update_lock import release_update_lock
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    monkeypatch.setenv("REPOWISE_TELEMETRY_DISABLED", "1")
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
+    repo = _init_two_file_repo(tmp_path)
+    _set_llm_docs_mode(repo)
+    state_path = repo / ".repowise/state.json"
+    state = json.loads(state_path.read_text())
+    base = state["last_sync_commit"]
+    state["last_docs_commit"] = base
+    state_path.write_text(json.dumps(state))
+    database_path = repo / ".repowise/wiki.db"
+    file_id = _mark_file_page_stale(repo)
+    with sqlite3.connect(database_path) as database:
+        database.row_factory = sqlite3.Row
+        spotlight_id = database.execute(
+            "SELECT id FROM wiki_pages WHERE page_type='symbol_spotlight' "
+            "AND target_path LIKE 'main.py::%' LIMIT 1"
+        ).fetchone()[0]
+        database.execute(
+            "UPDATE wiki_pages SET content=?, freshness_status='stale' WHERE id=?",
+            (STALE_SENTINEL, spotlight_id),
+        )
+        database.execute(
+            "UPDATE page_fts SET content=? WHERE page_id=?", (STALE_SENTINEL, spotlight_id)
+        )
+        prose_id = database.execute(
+            "SELECT id FROM wiki_pages WHERE page_type='repo_overview' LIMIT 1"
+        ).fetchone()[0]
+        database.execute(
+            "UPDATE wiki_pages SET provider_name='fixture-model', model_name='original', "
+            "content='Preserve this conceptual prose.', digest='Preserve this digest.', "
+            "input_tokens=123, output_tokens=45, cached_tokens=6 WHERE id=?",
+            (prose_id,),
+        )
+        prose = dict(
+            database.execute("SELECT * FROM wiki_pages WHERE id=?", (prose_id,)).fetchone()
+        )
+
+    (repo / "main.py").write_text(
+        "def greet(name: str, punctuation: str = '!') -> str:\n"
+        "    return f'Hello, {name}{punctuation}'\n"
+    )
+    (repo / "job_search.py").write_text("def search_jobs(query: str):\n    return [query]\n")
+    _git(repo, "add", "main.py", "job_search.py")
+    _git(
+        repo,
+        "-c",
+        "user.name=RepoWise Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "change greeting and add job search",
+    )
+    head = _run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    source_before = {p.name: p.read_bytes() for p in repo.glob("*.py")}
+    protected = [repo / "AGENTS.md", repo / ".vscode", repo / ".claude", repo / ".codex"]
+    assert all(not p.exists() for p in protected)
+    ws_root = tmp_path / "workspace"
+    ws_root.mkdir()
+    members = [RepoEntry(alias="api", path=str(repo), last_commit_at_index=base)]
+    sibling = tmp_path / "unselected"
+    if route == "selected":
+        sibling.mkdir()
+        members.append(RepoEntry(alias="unselected", path=str(sibling)))
+    WorkspaceConfig(version=1, repos=members).save(ws_root)
+
+    def fail_provider(*_args, **_kwargs):
+        raise AssertionError("structural workspace update must not resolve a model provider")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.command.resolve_provider_or_prompt", fail_provider
+    )
+    selection = ["--repo", "api"] if route == "selected" else ["--workspace"]
+    target = ws_root
+    if route == "single":
+        target, selection = repo, ["--no-workspace"]
+    try:
+        result = CliRunner().invoke(
+            cli, ["update", str(target), *selection, mode_flag, "--no-agents"]
+        )
+    finally:
+        release_update_lock(repo)
+    assert result.exit_code == 0, result.output
+    for page_id in (file_id, spotlight_id):
+        page_content, fts_content = _page_and_fts_content(repo, page_id)
+        assert STALE_SENTINEL not in page_content, result.output
+        assert "punctuation" in page_content
+        assert STALE_SENTINEL not in fts_content
+        assert "punctuation" in fts_content
+    with sqlite3.connect(database_path) as database:
+        database.row_factory = sqlite3.Row
+        assert (
+            database.execute(
+                "SELECT id FROM wiki_pages WHERE id='file_page:job_search.py' "
+                "AND freshness_status='fresh'"
+            ).fetchone()
+            is not None
+        )
+        after = dict(
+            database.execute("SELECT * FROM wiki_pages WHERE id=?", (prose_id,)).fetchone()
+        )
+        for field in (
+            "content",
+            "summary",
+            "digest",
+            "metadata_json",
+            "provider_name",
+            "model_name",
+            "created_at",
+            "updated_at",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+        ):
+            assert after[field] == prose[field]
+    updated = json.loads(state_path.read_text())
+    assert updated["last_sync_commit"] == head
+    assert updated["last_docs_commit"] == base
+    assert updated["docs_mode"] == "llm"
+    assert {p.name: p.read_bytes() for p in repo.glob("*.py")} == source_before
+    assert all(not p.exists() for p in protected)
+    assert not (sibling / ".repowise").exists()
+
+
 def test_stale_page_is_refreshed_after_file_loses_all_symbols(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     _stabilize_fixture(repo)

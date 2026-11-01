@@ -300,10 +300,12 @@ def _wants_docs_update(
 
     if not _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=repo_state):
         return True
-    # A template wiki re-renders the changed files' pages for free on the
-    # single-repo path; the core index-only path would freeze it. Model-written
-    # pages a user upgraded stay put.
-    return resolve_docs_mode(repo_state) == "deterministic"
+    # Both template and model wikis contain structural file/symbol pages.
+    # The core path only refreshes graph/Git and would freeze those cards.
+    # Keep the explicit no-model override when delegating to run_update; it
+    # refreshes structural pages without rewriting concept prose/docs pointer.
+    # Fast indexes without a wiki still belong on the core path.
+    return resolve_docs_mode(repo_state) in {"deterministic", "llm"}
 
 
 def _reconcile_up_to_date(ws_root: Path, up_to_date_repos: list[tuple[Path, str]]) -> None:

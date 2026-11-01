@@ -1493,7 +1493,21 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _add_stale_pages(run, stale_renderer_paths)
     _widen_for_full_render(run)
     run.structural_refresh_paths = list(
-        dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths, *run.affected.decay_only])
+        dict.fromkeys(
+            [
+                *stale_renderer_paths,
+                *run.stale_db_paths,
+                *run.affected.decay_only,
+                # Model wikis still need current structural cards, including
+                # new files with no prior render key. The template renderer
+                # excludes persisted model-written IDs independently.
+                *(
+                    run.affected.regenerate
+                    if run.index_only and resolve_docs_mode(run.state) == "llm"
+                    else []
+                ),
+            ]
+        )
     )
     _report_page_plan(run)
 
