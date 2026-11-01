@@ -11,6 +11,17 @@ For installation, initial configuration, MCP/Ollama setup, local excludes, upgra
 
 Installing or upgrading the global RepoWise CLI is user-controlled. Never do it because a warning advertises a newer version, and never do it as an implicit maintenance step. Execute the pinned upgrade only when the user explicitly asks the agent to upgrade, or give the documented command when the user explicitly chooses to run it personally.
 
+## Temporary MCP isolation during approved maintenance
+
+A user request to maintain or configure RepoWise includes permission to temporarily disable and restore existing RepoWise MCP connections when exclusive index access is needed, and to use the already installed or explicitly selected runtime for that task. Do not ask separately for a search pause or first access merely because the code pin changed, require the user to stop other agents, or coordinate a maintenance window among chats. Apply the existing preservation policy; this does not authorize extra backups or a CLI upgrade. Briefly announce the temporary outage and proceed within the requested maintenance scope.
+
+1. Identify the existing RepoWise MCP routes/processes that can access the affected indexes, including other workspaces sharing those indexes. Preserve their exact registration/enabled state. If concurrent access cannot be cheaply ruled out, isolate these routes rather than prolonging compatibility analysis.
+2. Temporarily disable access and automatic respawn, then stop only the confirmed RepoWise MCP processes. A shared workspace connection may be unavailable for all its aliases during the work. Suspending an old process is not a substitute for restarting it on the current runtime. Do not stop unrelated processes or cancel an active index writer under this MCP permission; let a conflicting writer finish before exclusive maintenance.
+3. Perform only the authorized maintenance. MCP isolation does not authorize an unrequested CLI upgrade, new route, model/config policy change, init, generation, reindex, deletion or source edit.
+4. After the required checks pass, restore the existing connections/enabled state using the current compatible runtime and verify fresh MCP routing. Do not revive an incompatible old server. Leave a damaged/unverified index isolated and report the concrete failure instead of reconnecting unsafely.
+
+Routine isolation/restoration needs no additional approval. If the host cannot reload its client-side tools automatically, report that an application restart is still needed; do not claim the client connection is verified. Other integrations, processes and access restrictions remain outside this permission.
+
 ## Resolve placeholders first
 
 - `<REPO_ROOT>`: exact repository or worktree root.
@@ -32,7 +43,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `734034800d2a988e26965e6b93ddbdfe068e8059`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `734034800d2a988e26965e6b93ddbdfe068e8059`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, permanent MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none. Requested index maintenance using the installed/selected runtime and temporary isolation/restoration of existing MCP routes are covered by that maintenance task under the lifecycle above.
 
 ### Target 0.59 contracts
 
@@ -126,7 +137,7 @@ Then classify the observed state:
 | Existing index errors after a CLI upgrade | Diagnose schema/migration compatibility and preserve a backup. Do not hide the error with a fresh `init`. |
 | No RepoWise index exists | Report the verified absence, then ask the user to choose the installation interaction and wiki mode described in Recipe 8. |
 
-Record whether `.claude/`, `.vscode/`, `.codex/`, `.mcp.json`, and `AGENTS.md` already existed. Later verification must distinguish pre-existing user files from files created by RepoWise. Do not ask the user to run checks the agent can safely run itself. Do not run `doctor --repair`, delete `.repowise`, rewrite editor settings, register MCP, or install/upgrade the CLI without the user's applicable request or approval.
+Record whether `.claude/`, `.vscode/`, `.codex/`, `.mcp.json`, and `AGENTS.md` already existed. Later verification must distinguish pre-existing user files from files created by RepoWise. Do not ask the user to run checks the agent can safely run itself. Do not run `doctor --repair`, delete `.repowise`, rewrite editor settings, add/repoint MCP routes permanently, or install/upgrade the CLI without the user's applicable request or approval. Temporary disable/restore of existing RepoWise MCP connections follows the maintenance lifecycle above without a separate pause request.
 
 ## Determine single-repo or workspace mode from current state
 
