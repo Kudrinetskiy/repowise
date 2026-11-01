@@ -32,7 +32,7 @@ Installing or upgrading the global RepoWise CLI is user-controlled. Never do it 
 - `<SKILL_ROOT>`: absolute path to this installed skill directory.
 - `<CLEANUP_RECEIPT>`: approved evidence-file path outside the target repository for the vector-only cleanup preview; it contains IDs and verification metadata, not index contents.
 
-Never paste unresolved placeholders. Target: patched `0.59.0` at `6f3b53fbd3719a80bbfd82808e9f31a323717143`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
+Never paste unresolved placeholders. Target: patched `0.59.0` at `734034800d2a988e26965e6b93ddbdfe068e8059`. This runtime pin names the tested CLI code commit; `main` may additionally contain separately validated skill, helper and documentation changes that do not change the installed CLI. This document establishes no installed version or live-index state. Inspect the actual runtime/help. Installation, first new-runtime index access, MCP changes, reindex, and LLM work require applicable authorization; inspection alone grants none.
 
 ### Target 0.59 contracts
 
@@ -1250,7 +1250,7 @@ REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
   --no-agents
 ```
 
-Guarantee no provider-dependent work:
+Exclude documentation-provider/LLM work (configured embeddings may still run):
 
 ```bash
 REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
@@ -1267,7 +1267,15 @@ REPOWISE_SKIP_EDITOR_SETUP=1 repowise update <WORKSPACE_ROOT> \
   --no-agents
 ```
 
-Add `--index-only` to the one-alias command when provider work must be excluded. After any real workspace update:
+Add `--index-only` to the one-alias command when documentation-provider/LLM work must be excluded; configured embeddings remain allowed.
+
+For an existing wiki, structural-only synchronization has the same file/symbol-page contract in single-repo, workspace-wide and selected-alias modes, including saved `docs_mode=llm`. The patched workspace delegates wiki-bearing members to the native single-repo refresh while preserving `--index-only` / `--no-docs`, model-written prose and the docs pointer. A fast/no-wiki index remains on the core graph/index path; this is not an automatic wiki/full-tier upgrade.
+
+Do not close structural acceptance with HEAD/sync and doctor alone: check that representative changed/current structural IDs and new eligible file paths were actually persisted and searchable, according to native selection/retirement. An unchanged timestamp alone does not establish a failure, but graph-only success with old changed page content is partial. Workspace dry-run currently previews member selection, not the exact per-page recovery plan.
+
+Historical graph-only updates may already have advanced sync. Installing this fix does not replay that lost commit range automatically. After diagnosis and explicit approval, preview a concrete single-repo Recipe 1A command with `--since <VERIFIED_PREVIOUS_SYNC_COMMIT>` to recover the proven missed range, then approve the actual scope before a real pass. Do not edit sync/docs markers, force `--docs`, generate prose, reindex or blindly repeat the same current-HEAD workspace command. These instructions do not authorize a recovery run.
+
+After any real workspace update:
 
 ```bash
 repowise workspace list <WORKSPACE_ROOT>

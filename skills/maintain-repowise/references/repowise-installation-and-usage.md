@@ -2,7 +2,7 @@
 
 ## Область и источник истины
 
-Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `6f3b53fbd3719a80bbfd82808e9f31a323717143`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
+Цель — patched 0.59.0 поверх upstream v0.59.0, не описание текущей установки конкретного пользователя. Release pin: `734034800d2a988e26965e6b93ddbdfe068e8059`. Это проверенный CLI code-коммит; main может содержать отдельно проверенные изменения skill/helper/инструкции без изменения установленного CLI. Не подставлять изменяемый main. Проверки пакета не доказывают исправность живых индексов. Исторические результаты 0.48/0.55 сюда не переносятся как текущий PASS.
 
 Опции сверены с рабочим CLI 0.59.0: init, update, generate, restyle, reindex, doctor, workspace add. Перед выполнением проверить фактически выбранный runtime и его help. Полные готовые рецепты, accounting-скрипт и SQLite contamination audit находятся в основном SKILL.md; эта справка объясняет установку и выбор маршрута.
 
@@ -66,7 +66,7 @@ command -v ollama >/dev/null 2>&1 && ollama list
 
 ```bash
 uv tool install --force --python 3.13 \
-  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@6f3b53fbd3719a80bbfd82808e9f31a323717143"
+  "repowise @ git+https://github.com/Kudrinetskiy/repowise.git@734034800d2a988e26965e6b93ddbdfe068e8059"
 repowise --version
 uv tool list --show-paths --show-version-specifiers
 ```
@@ -180,6 +180,10 @@ REPOWISE_SKIP_EDITOR_SETUP=1 repowise update /path/to/repository --no-workspace 
 
 Обычный update синхронизирует структуру/Git/health/file pages. Он не доказывает обновления существующей concept prose; docs-enabled путь может использовать provider для вспомогательной работы. --index-only исключает documentation provider work, но embeddings остаются отдельным механизмом.
 
+В исправленном workspace-пути существующая wiki, включая docs_mode=llm, получает тот же structural refresh file_page/symbol_spotlight, что и single-repo. Переданные --index-only/--no-docs сохраняются: concept prose и docs pointer не переписываются, documentation LLM не вызывается; embeddings могут вычисляться. Fast/no-wiki остаётся graph/index-only и не повышается автоматически до full wiki. Проверить содержимое затронутых структурных страниц и новые eligible пути по native selection, а не только sync=HEAD, старые timestamps или успешный doctor. Workspace dry-run показывает выбор members, не точный page plan.
+
+Если старый workspace-проход уже продвинул sync без обновления страниц, установка исправления сама по себе не возвращает пропущенный диапазон. После read-only диагноза и отдельного разрешения проверить concrete-repo index-only --since с доказанным предыдущим sync-коммитом через dry-run; реальный проход требует согласованного scope. Не править markers, не подменять это --docs/generate/reindex и не обещать исправление от идентичного current-HEAD workspace retry.
+
 --working-tree явно добавляет uncommitted staged/unstaged/untracked inputs в выбор изменений. Он не является переключателем между живыми файлами и Git blobs: обычный parser тоже читает live source. Совпадение marker HEAD само по себе не доказывает committed-only input. Не добавлять флаг без разрешения и не запускать обычный update как обход требования «только коммит», когда входы dirty.
 
 --docs не заменяет generate. --full поднимает один fast index до полного: сначала --full --dry-run, затем одобренная мутация. Это не full-project refresh уже написанной prose. При workspace --full требует один --repo.
@@ -237,6 +241,8 @@ Reindex не пишет prose, но пишет embeddings и может вызв
 Doctor --repair может выполнять другие действия; не использовать его вместо диагностики. После завершения согласованных критериев остановиться; повторный аудит и дополнительные repair/generation не являются частью обычного обслуживания.
 
 ## Источники текущей проверки
+
+- Workspace structural parity: подтверждён RED пропуска старых страниц в workspace/alias и отдельный RED новой file_page в single-repo model wiki. Исправлены маршрутизация wiki-bearing members и перенос planned changed/cascade paths в no-model structural rendering. Шесть public-CLI сценариев single/workspace/alias × index-only/no-docs прошли, с сохранением prose/digest/provenance/timestamps/tokens/docs pointer и provider tripwire. Смежный набор:75PASS, сборка четырёх пакетов и Ruff/format/diff PASS. Это синтетические проверки, не приёмка живого backend; исторический graph-only пропуск требует отдельно согласованного восстановления диапазона.
 
 - Текущий follow-up: same-run retained structural refresh и exact failed-items embedding retry проверены RED→GREEN; постоянная ошибка сохраняет existing stale/fingerprint repair, без новой очереди и автоматического reindex. Doctor использует eligible-ID reconciliation с настоящими missing/orphan/unknown negative controls. Объединённый прогон2165PASS/1FAIL; найденный SCC-only лишний SQL dependency исправлен owner guard без изменения тестовых ожиданий, затем exact1PASS и containing7PASS. Остальная доказательная база неизменна и переиспользована; это не новый полный suite. Финальная сборка4пакетов и wheel preview/strictstdio PASS.
 
